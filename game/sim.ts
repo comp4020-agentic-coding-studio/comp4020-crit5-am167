@@ -51,15 +51,42 @@ export const CAR_GAP = 0.055;
 // Numbers to be settled by playing, not by reasoning. See notes/log.md.
 
 export const CAR_SPEED = 0.26;
-export const SPAWN_START = 1.5;
-export const SPAWN_MIN = 0.42;
-export const PATIENCE_START = 7;
-export const PATIENCE_MIN = 3.4;
-/** Seconds over which the game ramps from its opening pace to its hardest. */
-export const RAMP_SECONDS = 150;
+export const SPAWN_START = 1.6;
+export const SPAWN_MIN = 0.2;
+export const PATIENCE_START = 9;
+export const PATIENCE_MIN = 0.7;
+/** Time constant of the ramp. Difficulty eases toward the floors, never plateaus. */
+export const RAMP_SECONDS = 55;
 
 export function axisOf(dir: Dir): Axis {
   return dir === "n" || dir === "s" ? "ns" : "ew";
+}
+
+/** Which axes currently have a car inside the intersection box. */
+export function occupancy(g: Game): Record<Axis, boolean> {
+  const box = { ns: false, ew: false };
+  for (const c of g.cars) {
+    if (c.t > STOP && c.t <= EXIT) box[axisOf(c.from)] = true;
+  }
+  return box;
+}
+
+/**
+ * Whether an axis may actually move, which is not the same as having the
+ * green. A real intersection holds everyone while the box drains, and so does
+ * this one: without that, flipping the light sends a waiting car straight into
+ * one still clearing, and the crash is the player's reward for doing the thing
+ * the game asked of them.
+ *
+ * The consequence is the good part. Once switching can never cause a crash,
+ * the *only* way to lose is a driver who ran out of patience — so every loss
+ * traces back to an approach the player starved, and the mechanic and the
+ * failure become the same thing.
+ */
+export function flowing(g: Game, axis: Axis): boolean {
+  if (axis !== g.green) return false;
+  const box = occupancy(g);
+  return !box[axis === "ns" ? "ew" : "ns"];
 }
 
 // --- Determinism ----------------------------------------------------------
@@ -74,16 +101,25 @@ function random(state: number): { value: number; state: number } {
   return { value: ((t ^ (t >>> 14)) >>> 0) / 4294967296, state: next };
 }
 
-/** Seconds between spawns, easing from the opening pace to the hardest. */
+// The ramp decays toward its floors and never reaches a plateau. That is
+// deliberate, and it was measured rather than guessed: with a ramp that
+// levelled off, the intersection settled into an equilibrium just under
+// failure — queues around twenty cars, patience peaking at 0.8, and a
+// competent player surviving indefinitely. A game that cannot end fails the
+// spec line about a stranger reaching an ending. Decay guarantees that
+// patience eventually falls below the time it takes to serve every approach,
+// at which point somebody has to bolt.
+
+/** Seconds between spawns. Falls toward SPAWN_MIN, never quite arriving. */
 export function spawnInterval(time: number): number {
-  const p = Math.min(1, time / RAMP_SECONDS);
-  return SPAWN_START + (SPAWN_MIN - SPAWN_START) * p;
+  const decay = Math.exp(-time / RAMP_SECONDS);
+  return SPAWN_MIN + (SPAWN_START - SPAWN_MIN) * decay;
 }
 
-/** How long a driver waits before running the red. Shortens as the game ramps. */
+/** How long a driver waits before running the red. Shrinks without plateau. */
 export function patienceSeconds(time: number): number {
-  const p = Math.min(1, time / RAMP_SECONDS);
-  return PATIENCE_START + (PATIENCE_MIN - PATIENCE_START) * p;
+  const decay = Math.exp(-time / RAMP_SECONDS);
+  return PATIENCE_MIN + (PATIENCE_START - PATIENCE_MIN) * decay;
 }
 
 // --- The opening frame ----------------------------------------------------
@@ -155,6 +191,11 @@ export function step(g: Game, dt: number): Game {
   // the one in front of it.
   const patienceRate = dt / patienceSeconds(time);
   const moved: Car[] = [];
+  // Measured before anything moves, so every approach sees the same box.
+  const canFlow = {
+    ns: flowing({ ...g, cars }, "ns"),
+    ew: flowing({ ...g, cars }, "ew"),
+  };
 
   for (const from of DIRS) {
     const queue = cars
@@ -164,7 +205,7 @@ export function step(g: Game, dt: number): Game {
     let aheadT: number | null = null;
 
     for (const c of queue) {
-      const red = axisOf(c.from) !== g.green;
+      const red = !canFlow[axisOf(c.from)];
       let limit = aheadT === null ? Number.POSITIVE_INFINITY : aheadT - CAR_GAP;
       // The commit rule: only an uncommitted car can be held by the light.
       if (!c.committed && red) limit = Math.min(limit, STOP);
@@ -172,10 +213,16 @@ export function step(g: Game, dt: number): Game {
       const t = Math.max(c.t, Math.min(c.t + CAR_SPEED * dt, limit));
       const stopped = t - c.t < 1e-9;
 
-      // Only the head of a queue gets impatient, and only when the light —
-      // not the car in front — is what is holding it. Losing to a red-runner
-      // is therefore always traceable to an approach the player starved.
-      const held = stopped && red && !c.committed && aheadT === null;
+      // Anyone stopped gets impatient, not just the car at the line. Measuring
+      // it the other way left a hole: a saturated approach generated no
+      // pressure at all, because the only car that could grow impatient was
+      // the one the player was about to serve anyway. A driver eight back in a
+      // jam is the angry one, and now the whole queue shows it.
+      //
+      // A committed car is already going, so it stops accruing — and note that
+      // committing only frees a car from the *light*, never from the car in
+      // front, so an impatient driver still cannot drive through a queue.
+      const held = stopped && !c.committed;
       const patience = held ? Math.min(1, c.patience + patienceRate) : c.patience;
 
       moved.push({
@@ -194,7 +241,9 @@ export function step(g: Game, dt: number): Game {
   // --- Collide ---
   // Only cars sharing the box on crossing axes. Same-axis cars cannot meet;
   // CAR_GAP guarantees it.
-  const inBox = cars.filter((c) => c.t >= STOP && c.t <= EXIT);
+  // Exclusive at STOP: a car resting *on* the line is waiting, not crossing.
+  // The same boundary defines `committed`, so "past the line" means one thing.
+  const inBox = cars.filter((c) => c.t > STOP && c.t <= EXIT);
   for (let i = 0; i < inBox.length; i++) {
     for (let j = i + 1; j < inBox.length; j++) {
       const a = inBox[i]!;

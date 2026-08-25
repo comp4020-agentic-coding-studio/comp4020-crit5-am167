@@ -1,90 +1,72 @@
 // Drawing only. Every rule lives in sim.ts; nothing here decides anything
 // about the game, it just says what the current state looks like.
 
-import {
-  CAR_GAP,
-  EXIT,
-  STOP,
-  type Car,
-  type Dir,
-  type Game,
-  axisOf,
-} from "./sim.ts";
+import { EXIT, STOP, type Car, type Dir, type Game, axisOf, flowing } from "./sim.ts";
 
-const ROAD = "#2a2d34";
-const ASPHALT_EDGE = "#1b1d22";
 const GRASS = "#12141a";
-const PAINT = "#5b6070";
+const ROAD = "#2a2d34";
+const KERB = "#1b1d22";
+const PAINT = "#818799";
 const GO = "#39d353";
 const STOPPED = "#f2544b";
 const WAIT = "#f5a623";
+const CALM = "#cfd3dc";
 
 /** Half-width of the carriageway, as a fraction of the smaller screen edge. */
-const ROAD_HALF = 0.085;
-const CAR_LEN = 0.042;
-const CAR_WIDE = 0.030;
+const ROAD_HALF = 0.075;
+const CAR_LEN = 0.040;
+const CAR_WIDE = 0.026;
 
 export type Size = { width: number; height: number };
 
+type Geom = {
+  min: number;
+  half: number;
+  lane: number;
+  cx: number;
+  cy: number;
+};
+
+function geom(s: Size): Geom {
+  const min = Math.min(s.width, s.height);
+  const half = min * ROAD_HALF;
+  return { min, half, lane: half / 2, cx: s.width / 2, cy: s.height / 2 };
+}
+
 /**
- * Where a car sits, in pixels. `t` runs from the edge it entered (0) to the
- * far edge (1), so the intersection is always at t = 0.5 whatever the shape
- * of the viewport.
+ * Distance in pixels along an approach, for a car at `t`.
+ *
+ * The sim measures `t` from 0 at the entry edge to 1 at the far edge, with the
+ * intersection between STOP and EXIT. The junction, though, is a square in
+ * pixels, so on a wide screen the same `t` window is a very different fraction
+ * of the width than of the height. Mapping `t` straight onto the axis puts the
+ * painted stop line and the sim's stop line in different places — cars queue
+ * inside the junction, and the rule the player is being taught is invisible.
+ *
+ * So the map is piecewise: approach, box, exit. STOP lands exactly on the kerb
+ * line and EXIT exactly on the far one, whatever shape the window is.
  */
+function along(t: number, axisLength: number, half: number): number {
+  const centre = axisLength / 2;
+  const approach = centre - half;
+  if (t <= STOP) return (t / STOP) * approach;
+  if (t <= EXIT) return approach + ((t - STOP) / (EXIT - STOP)) * half * 2;
+  return centre + half + ((t - EXIT) / (1 - EXIT)) * (centre - half);
+}
+
 function place(from: Dir, t: number, s: Size): { x: number; y: number } {
-  const { width: w, height: h } = s;
-  const lane = Math.min(w, h) * ROAD_HALF * 0.5;
+  const g = geom(s);
+  const vertical = axisOf(from) === "ns";
+  const d = along(t, vertical ? s.height : s.width, g.half);
   switch (from) {
     case "n":
-      return { x: w / 2 + lane, y: t * h };
+      return { x: g.cx + g.lane, y: d };
     case "s":
-      return { x: w / 2 - lane, y: (1 - t) * h };
+      return { x: g.cx - g.lane, y: s.height - d };
     case "w":
-      return { x: t * w, y: h / 2 - lane };
+      return { x: d, y: g.cy - g.lane };
     case "e":
-      return { x: (1 - t) * w, y: h / 2 + lane };
-  }
-}
-
-function roundRect(
-  ctx: CanvasRenderingContext2D,
-  x: number,
-  y: number,
-  w: number,
-  h: number,
-  r: number,
-): void {
-  ctx.beginPath();
-  ctx.roundRect(x - w / 2, y - h / 2, w, h, r);
-  ctx.fill();
-}
-
-function drawCar(ctx: CanvasRenderingContext2D, car: Car, s: Size): void {
-  const min = Math.min(s.width, s.height);
-  const { x, y } = place(car.from, car.t, s);
-  const vertical = axisOf(car.from) === "ns";
-  const len = min * CAR_LEN;
-  const wide = min * CAR_WIDE;
-
-  // A car that has run out of patience is the one about to hurt you, so it is
-  // the one that has to look different. The colour ramps with the wait rather
-  // than flipping at the end — the warning has to arrive before the event.
-  ctx.fillStyle =
-    car.patience >= 1 ? STOPPED : car.patience > 0 ? mix(WAIT, "#cfd3dc", 1 - car.patience) : "#cfd3dc";
-
-  roundRect(ctx, x, y, vertical ? wide : len, vertical ? len : wide, min * 0.008);
-
-  if (car.patience > 0 && car.patience < 1) {
-    // The patience bar. This is the only "instruction" on the screen, and it
-    // is not text: a bar that fills toward a car that then bolts teaches the
-    // whole mechanic by happening once.
-    const barLen = (vertical ? wide : len) * car.patience;
-    ctx.fillStyle = WAIT;
-    if (vertical) {
-      ctx.fillRect(x - wide / 2, y - len / 2 - min * 0.012, barLen, min * 0.006);
-    } else {
-      ctx.fillRect(x - len / 2, y - wide / 2 - min * 0.012, barLen, min * 0.006);
-    }
+      return { x: s.width - d, y: g.cy + g.lane };
   }
 }
 
@@ -95,82 +77,120 @@ function mix(a: string, b: string, k: number): string {
   return `rgb(${c[0]},${c[1]},${c[2]})`;
 }
 
-function drawLight(
-  ctx: CanvasRenderingContext2D,
-  from: Dir,
-  green: boolean,
-  s: Size,
-): void {
-  const min = Math.min(s.width, s.height);
-  const { x, y } = place(from, STOP - CAR_GAP * 0.55, s);
-  const off = min * ROAD_HALF * 0.72;
+function drawCar(ctx: CanvasRenderingContext2D, car: Car, s: Size): void {
+  const g = geom(s);
+  const { x, y } = place(car.from, car.t, s);
+  const vertical = axisOf(car.from) === "ns";
+  const len = g.min * CAR_LEN;
+  const wide = g.min * CAR_WIDE;
+  const w = vertical ? wide : len;
+  const h = vertical ? len : wide;
+
+  // The car about to hurt you is the one that has to look different, and the
+  // warning has to arrive before the event — so the colour ramps with the wait
+  // instead of flipping at the end.
+  ctx.fillStyle =
+    car.patience >= 1 ? STOPPED : car.patience > 0 ? mix(WAIT, CALM, 1 - car.patience) : CALM;
+  ctx.beginPath();
+  ctx.roundRect(x - w / 2, y - h / 2, w, h, g.min * 0.007);
+  ctx.fill();
+
+  // The patience bar: the only thing on screen that explains anything, and it
+  // is not text. A bar that fills, and a car that then bolts, teaches the whole
+  // mechanic by happening once.
+  if (car.patience > 0 && car.patience < 1) {
+    // Always the long dimension: on a vertical car the width is too short to
+    // read as a bar at all, and this is the one thing the player must notice.
+    const thick = Math.max(2, g.min * 0.007);
+    const barW = len;
+    ctx.fillStyle = mix(WAIT, STOPPED, car.patience);
+    ctx.fillRect(x - barW / 2, y - h / 2 - thick * 2, barW * car.patience, thick);
+  }
+}
+
+function drawLight(ctx: CanvasRenderingContext2D, from: Dir, green: boolean, s: Size): void {
+  const g = geom(s);
   const vertical = axisOf(from) === "ns";
-  // Sit the light beside its own stop line, on the kerb.
-  const cx = x + (vertical ? (from === "n" ? off : -off) : 0);
-  const cy = y + (vertical ? 0 : from === "w" ? -off : off);
+  // Sit each light just outside its own stop line, on the kerb.
+  const back = g.half * 0.45;
+  const out = g.half * 1.45;
+  let x = 0;
+  let y = 0;
+  if (from === "n") [x, y] = [g.cx + out, g.cy - g.half - back];
+  if (from === "s") [x, y] = [g.cx - out, g.cy + g.half + back];
+  if (from === "w") [x, y] = [g.cx - g.half - back, g.cy - out];
+  if (from === "e") [x, y] = [g.cx + g.half + back, g.cy + out];
+  void vertical;
 
   ctx.beginPath();
-  ctx.arc(cx, cy, min * 0.014, 0, Math.PI * 2);
+  ctx.arc(x, y, g.min * 0.013, 0, Math.PI * 2);
   ctx.fillStyle = green ? GO : STOPPED;
   ctx.shadowColor = green ? GO : STOPPED;
-  ctx.shadowBlur = min * 0.03;
+  ctx.shadowBlur = g.min * 0.035;
   ctx.fill();
   ctx.shadowBlur = 0;
 }
 
-export function draw(ctx: CanvasRenderingContext2D, g: Game, s: Size): void {
+export function draw(ctx: CanvasRenderingContext2D, state: Game, s: Size): void {
   const { width: w, height: h } = s;
-  const min = Math.min(w, h);
-  const half = min * ROAD_HALF;
+  const g = geom(s);
 
   ctx.fillStyle = GRASS;
   ctx.fillRect(0, 0, w, h);
 
-  // Roads
   ctx.fillStyle = ROAD;
-  ctx.fillRect(0, h / 2 - half, w, half * 2);
-  ctx.fillRect(w / 2 - half, 0, half * 2, h);
-  ctx.strokeStyle = ASPHALT_EDGE;
-  ctx.lineWidth = Math.max(1, min * 0.004);
-  ctx.strokeRect(0, h / 2 - half, w, half * 2);
-  ctx.strokeRect(w / 2 - half, 0, half * 2, h);
+  ctx.fillRect(0, g.cy - g.half, w, g.half * 2);
+  ctx.fillRect(g.cx - g.half, 0, g.half * 2, h);
 
-  // Stop lines. Drawn because the commit rule is defined against them: past
-  // this line a car is going, whatever you do. The player needs to see it.
+  ctx.strokeStyle = KERB;
+  ctx.lineWidth = Math.max(1, g.min * 0.003);
+  ctx.strokeRect(0, g.cy - g.half, w, g.half * 2);
+  ctx.strokeRect(g.cx - g.half, 0, g.half * 2, h);
+
+  // Stop lines, on the kerb line of the box. Drawn because the commit rule is
+  // defined against them: past this line a car is going, whatever you do.
   ctx.fillStyle = PAINT;
-  const thick = Math.max(2, min * 0.006);
-  const boxHalf = min * ROAD_HALF;
-  ctx.fillRect(w / 2 - boxHalf, h / 2 - boxHalf - thick, boxHalf, thick);
-  ctx.fillRect(w / 2, h / 2 + boxHalf, boxHalf, thick);
-  ctx.fillRect(w / 2 - boxHalf - thick, h / 2, thick, boxHalf);
-  ctx.fillRect(w / 2 + boxHalf, h / 2 - boxHalf, thick, boxHalf);
+  const thick = Math.max(2, g.min * 0.005);
+  ctx.fillRect(g.cx, g.cy - g.half - thick, g.half, thick);
+  ctx.fillRect(g.cx - g.half, g.cy + g.half, g.half, thick);
+  ctx.fillRect(g.cx - g.half - thick, g.cy - g.half, thick, g.half);
+  ctx.fillRect(g.cx + g.half, g.cy, thick, g.half);
 
+  // A light is green only when its axis can actually move. During the clearance
+  // after a switch every light is red — which is true, and is also the reason
+  // nothing moved when the player expected it to.
   for (const dir of ["n", "e", "s", "w"] as const) {
-    drawLight(ctx, dir, axisOf(dir) === g.green, s);
+    drawLight(ctx, dir, flowing(state, axisOf(dir)), s);
   }
 
-  for (const car of g.cars) drawCar(ctx, car, s);
+  for (const car of state.cars) drawCar(ctx, car, s);
 
-  if (g.crash) {
-    const { x, y } = place(g.crash.from, g.crash.t, s);
+  if (state.crash) {
+    const { x, y } = place(state.crash.from, state.crash.t, s);
     ctx.fillStyle = STOPPED;
     ctx.beginPath();
-    for (let i = 0; i < 12; i++) {
-      const a = (i / 12) * Math.PI * 2;
-      const r = min * (i % 2 ? 0.022 : 0.055);
+    for (let i = 0; i < 16; i++) {
+      const a = (i / 16) * Math.PI * 2;
+      const r = g.min * (i % 2 ? 0.025 : 0.06);
       ctx[i ? "lineTo" : "moveTo"](x + Math.cos(a) * r, y + Math.sin(a) * r);
     }
     ctx.closePath();
     ctx.fill();
   }
 
-  // The score. Digits only — the number goes up when a car gets through, and
+  // The score. Digits only: the number goes up when a car gets through, and
   // that is the whole of what it means.
-  ctx.fillStyle = g.crash ? "#e8eaf0" : "#6b7080";
-  ctx.font = `600 ${Math.round(min * (g.crash ? 0.13 : 0.05))}px ui-monospace, monospace`;
-  ctx.textAlign = "center";
-  ctx.textBaseline = "middle";
-  ctx.fillText(String(g.passed), w / 2, g.crash ? h / 2 : min * 0.075);
+  ctx.fillStyle = state.crash ? "#e8eaf0" : "#6b7080";
+  ctx.font = `600 ${Math.round(g.min * (state.crash ? 0.14 : 0.05))}px ui-monospace, monospace`;
+  // Parked in the top-right, clear of both carriageways — over the north lane
+  // it was colliding with the cars it counts.
+  if (state.crash) {
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(String(state.passed), w / 2, h / 2);
+  } else {
+    ctx.textAlign = "right";
+    ctx.textBaseline = "top";
+    ctx.fillText(String(state.passed), w - g.min * 0.06, g.min * 0.05);
+  }
 }
-
-export { EXIT, STOP };
