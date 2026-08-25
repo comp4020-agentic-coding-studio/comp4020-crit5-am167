@@ -52,11 +52,13 @@ export const CAR_GAP = 0.055;
 
 export const CAR_SPEED = 0.26;
 export const SPAWN_START = 1.6;
-export const SPAWN_MIN = 0.2;
+export const SPAWN_MIN = 0.14;
 export const PATIENCE_START = 9;
-export const PATIENCE_MIN = 0.7;
+export const PATIENCE_MIN = 0.35;
 /** Time constant of the ramp. Difficulty eases toward the floors, never plateaus. */
-export const RAMP_SECONDS = 55;
+export const RAMP_SECONDS = 46;
+/** How fast a moving car sheds patience, relative to how fast a stopped one gains it. */
+export const CALM_RATE = 0.3;
 
 export function axisOf(dir: Dir): Axis {
   return dir === "n" || dir === "s" ? "ns" : "ew";
@@ -223,14 +225,27 @@ export function step(g: Game, dt: number): Game {
       // committing only frees a car from the *light*, never from the car in
       // front, so an impatient driver still cannot drive through a queue.
       const held = stopped && !c.committed;
-      const patience = held ? Math.min(1, c.patience + patienceRate) : c.patience;
+      const patience = held
+        ? Math.min(1, c.patience + patienceRate)
+        : // A driver who gets a clear run calms down. Without this, a car that
+          // was briefly boxed in stays furious for the whole length of the
+          // road, which looks absurd and plays worse: it arrives at a junction
+          // it has no grievance with and runs the red anyway.
+          Math.max(0, c.patience - patienceRate * CALM_RATE);
 
       moved.push({
         ...c,
         t,
         patience,
-        // Past the line, or out of patience: either way it is going now.
-        committed: c.committed || t > STOP || patience >= 1,
+        // Past the line it is going, whatever happens. Impatience, though, only
+        // cashes in at the front of the queue and within sight of the line —
+        // a car that boils over eight back has to drive up and still be angry
+        // when it gets there. Latching it early meant a crash could trace to a
+        // grievance from half a minute and a clear run ago.
+        committed:
+          c.committed ||
+          t > STOP ||
+          (patience >= 1 && aheadT === null && t >= STOP - CAR_GAP),
       });
       aheadT = t;
     }

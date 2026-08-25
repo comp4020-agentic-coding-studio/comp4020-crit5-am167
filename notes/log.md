@@ -66,3 +66,22 @@ and the wreck draws last and larger, so both are legible.
 This one is invisible from the code. Reading `draw()` it is obvious the number is centred and
 obvious the star is centred; nothing says they collide, because nothing says the crash matters
 more. You only see it having just lost.
+
+## Calming down, and the guard rail catching me
+
+Looking at 1920x1080 found something the tests could not: a bright red (fully impatient) car near
+the *top* of the north lane, nowhere near the junction. Queue-wide patience meant it boiled over
+eight cars back, latched `committed`, then got a clear run — so it was pre-committed to running a
+red it would not reach for seconds. Crashes could trace to a grievance from half a minute and a
+free run ago, which is the unfair-feeling loss the commit rule existed to prevent.
+
+Two one-line fixes: a moving car sheds patience (CALM_RATE), and impatience only cashes in at the
+front of the queue within sight of the line.
+
+Then the "a round always ends" test went red across 11 cases — calming had made the game
+unlosable again. That test exists precisely because I once shipped an equilibrium I could not
+see, and this time it caught the same class of regression before I could. Re-measured rather than
+guessed: PATIENCE_MIN 0.7→0.35, SPAWN_MIN 0.2→0.14, CALM_RATE 0.55→0.3, RAMP 55→46.
+
+Now: idle 7–41s, competent 152–266s (all under the 300s the spec implies), masher 189–333s.
+Nothing survives.

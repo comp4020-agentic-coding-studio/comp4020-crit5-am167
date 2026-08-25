@@ -1,67 +1,44 @@
-# COMP4020 static prototype template
+# Junction
 
-A starter template for static-site prototypes in **COMP4020 / COMP8020 Agentic
-Coding Studio**. The course provisions a repo from this template for each
-deliverable --- you don't create it yourself. The `start` course skill clones it
-for you; from there, build your prototype and deploy it to GitHub Pages.
+A one-intersection traffic game, built for COMP4020 Crit 5. Hold the lights
+against four queues for as long as you can.
 
-## CI and Pages only turn on when you ship
+**There are deliberately no instructions here, and none in the game.** The brief
+requires it to teach itself, and a README that explains the mechanic would be
+the same failure as a how-to-play modal, just further away. If you want to know
+how it works, play it — that is the whole design.
 
-Your repo starts private, and both CI jobs (`check` and `deploy`) are gated on
-it being public. While private, a push to `main` runs nothing in CI ---
-`pnpm check` (below) is your feedback loop until then. When you're ready, the
-course's `/ship` skill flips the repo public, turns on GitHub Pages, and
-dispatches the deploy for you; there's nothing to configure in the Pages
-settings yourself. From that point, every push to `main` builds and deploys, and
-the deploy step prints your live URL and checks it returns 200.
+What this file will say is how the code is arranged.
 
-## What gets marked
+## Layout
 
-The deployed site is the deliverable, assessed live in Chrome at two fixed
-viewports --- see the course website's
-[assessment page](https://comp.anu.edu.au/courses/comp4020-agentic-coding-studio/topics/assessment/#marking-environment)
-for the details.
+| Path | What it is |
+| --- | --- |
+| `game/sim.ts` | The rules. Pure, deterministic, DOM-free — no `Date.now`, no `Math.random`, no `document`. A playthrough is a fold over `step()`. |
+| `game/render.ts` | Drawing only. Decides nothing about the game. |
+| `main.ts` | The rAF loop, input, and the canvas. |
+| `spec/game.test.ts` | Contract tests for this week's spec. They play the game headlessly rather than asserting on pixels. |
+| `spec/teaches-itself.test.ts` | Contract test holding the no-instructions line. |
+| `spec/sensors.test.ts` | A sensor, not a contract — carries forward to next week. |
+| `spec/invariants.test.ts` | Shipped with the template. Immutable. |
 
-## Quick start
+The split between `sim.ts` and everything else is the load-bearing decision: it
+is what lets a test play a whole round, which is how the difficulty ramp and the
+"a round always ends" guarantee are checked at all.
+
+## Working on it
 
 ```sh
-mise install       # supported path: install the template's Node and pnpm
 pnpm install
-pnpm dev             # local dev server
-pnpm check           # most of what CI runs (links, secrets and deploy are CI-only)
-pnpm check:evidence  # the process-evidence check CI runs before you ship
-pnpm build           # produce dist/ (what gets deployed)
-
-# reproduce CI's links check before you push
-pnpm dlx linkinator ./dist --silent --skip "^https?://(?!localhost|127)"
+pnpm dev              # local dev server
+pnpm check            # typecheck + build + all spec tests
+pnpm check:evidence    # process evidence gate, before shipping
 ```
 
-`mise` is the course's recommended runtime manager. If you use another manager
-or the official installers, that is fine: provide the Node and pnpm versions in
-`mise.toml`, then run the same commands. Tutor support reproduces runtime
-problems with mise.
+`spec/*.test.ts` files that read `dist/` need a build first; `pnpm check` does
+that for you.
 
-## What's here
+## Process
 
-- `index.html`, `styles.css`, `main.ts` --- a minimal starting site. Replace it.
-- `mise.toml` --- the tested Node and pnpm versions for this template.
-- `spec/` --- what the checks are for (`README.md`) and the shipped invariants
-  (`invariants.test.ts`); the spec tests you write live alongside them.
-- `CLAUDE.md` --- orients whoever works in this repo, you or a coding agent.
-  Yours to grow.
-- `PROCESS.md` --- a template for your process overview, showing the
-  cited-moment format. Replace it with your own; `pnpm check:evidence` verifies
-  your citations resolve.
-- `.github/workflows/checks.yml` --- the CI sensors that run on every push once
-  your repo is public, and the GitHub Pages deploy.
-- `.githooks/pre-commit` --- blocks any commit that contains something shaped
-  like an API key, so your COMP4020 key can't end up in a public repo. Installed
-  automatically by `pnpm install`.
-
-This template is SSG-agnostic: plain HTML/CSS/TypeScript on Vite, so you can add
-Astro, Eleventy, or any static generator later without changing how it deploys.
-The course plugin's `stack` skill performs the swap for you — to the course
-default (Astro) or bare HTML/CSS — with the Pages base path, lockfile, and CI
-link check handled.
-
-See the course site for how the checks map to each week of the course.
+`PROCESS.md` is the reading guide, with commit citations. `notes/log.md` is the
+raw running log, and `reflections/crit-5.md` is the reflection.
