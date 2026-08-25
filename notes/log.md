@@ -85,3 +85,60 @@ guessed: PATIENCE_MIN 0.7→0.35, SPAWN_MIN 0.2→0.14, CALM_RATE 0.55→0.3, RA
 
 Now: idle 7–41s, competent 152–266s (all under the 300s the spec implies), masher 189–333s.
 Nothing survives.
+
+## Graphics overhaul: a lit junction instead of a diagram
+
+Total rewrite of `game/render.ts`. Sim untouched — every rule, and every test over the rules,
+is exactly as it was. Direction: a wet junction at 2am seen from the traffic mast. Everything
+built is grey and textured (asphalt grain, polished wheel tracks, kerbs with a lit top face and
+a shadow under them, concrete footpaths with paving joints, worn thermoplastic paint, a faint
+box-junction hatch). Saturated colour is spent on three things only: the signals, the cars' own
+lamps, and patience running out. That is a gameplay decision wearing an aesthetic one's clothes —
+the only coloured things on screen are the things the player has to look at.
+
+Cars are drawn properly now: body with a sheen gradient across it, cabin, windscreen and rear
+glass, mirrors, tyres, headlights throwing a cone down the lane, brake lights that come on when
+stopped. Signal heads got a housing with three lenses. Street lamps run staggered down every
+approach. Background and vignette are cached offscreen layers, rebuilt only on resize.
+
+**TDD, and what it did and did not catch.** Wrote `spec/render.test.ts` first against exported
+`carBox`/`roadHalfWidth`: cars stay inside their carriageway, never cross into the opposing lane,
+and a car waiting at STOP stops *behind* the paint rather than nosing into the box. It failed for
+the right reason (helpers didn't exist), then drove the geometry. That found a real latent
+problem: `t` was being drawn as the car's centre, so a waiting car overhung the intersection by
+half its length. Cars now track their *nose*, which is what STOP and the collision box are
+actually defined against.
+
+**Where the tests were not enough.** First run in a real browser: the game froze on frame one.
+`mix()` returned `rgb(...)`, `shade()` read it as hex, and the result was
+`fillStyle = "rgb(NaN,NaN,3)"` — which canvas *throws* on, which killed the frame callback, which
+ended the rAF chain. 70 green tests, dead game. My strict-context stub only checked numeric
+arguments, and this NaN was inside a string; worse, the gradient stub's `addColorStop` was
+checking the offset and ignoring the colour, which is precisely where the bad value landed.
+Fixed the renderer (every colour helper returns hex so they compose; `parse` reads both forms),
+then fixed the sensor to reject `NaN|undefined|Infinity` inside strings *and* to check every
+`addColorStop` argument. Verified the sensor has teeth by reintroducing the original bug: 14
+failures naming `rgb(NaN,NaN,3)` exactly. That is the lesson worth keeping — a test that cannot
+fail is not backpressure, and I only knew it could fail because I made it.
+
+**Where looking at it was not optional.** Three defects no test would ever have raised, all
+found by opening the page:
+
+- Vignette at 0.62 plus a near-black ground swallowed the far ends of both roads. Cars queueing
+  out there were invisible — and a patience bar you cannot see until the car reaches the middle
+  is a warning that arrives after the thing it was warning about. Down to 0.3, palette lifted.
+- I had shrunk the road to get a realistic lane-to-car width ratio and made the game unreadable:
+  a tiny cross in a huge black field. Realism lost to legibility; ROAD_HALF back to 0.075.
+- The kerbs were drawn straight through the junction and then the box was painted back over the
+  top to erase them — which also erased the box's grain and wheel tracks. The junction came out a
+  flat pale square, the brightest thing on screen, pulling the eye to the one place nothing was
+  happening. Rewrote it to draw kerbs as explicit segments that stop at the box.
+
+Also moved the street lamps off the junction's corners (where they crowded the signals and lit
+the brightest part of the scene) out along the approaches, where the queues and their patience
+bars actually are. And replaced the crash's hard ring — it read as a crosshair, the one thing on
+screen that looked like interface rather than world — with a soft blast halo.
+
+Verified at both marked viewports by device emulation with `innerWidth`/`innerHeight` asserted
+(1920x1080 and 390x844), plus a crash frame. Frame budget under a live junction: 8.3ms median,
+9.3ms worst, against 16.7ms.
