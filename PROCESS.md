@@ -75,6 +75,22 @@ was ready to fix it. Measured across a real round: longest all-red was 159ms,
 one blackout over 120ms in 54 seconds. Not a problem. I would have spent the
 fix anyway.
 
+[`f680bb3`](https://github.com/comp4020-agentic-coding-studio/comp4020-crit5-am167/commit/f680bb3)
+— the verification pass at 1920×1080 found a fully-impatient car sitting near
+the top of the north lane, nowhere near the junction. It had boiled over eight
+cars back, latched `committed`, then got a clear run: pre-committed to running a
+red it wouldn't reach for seconds. A crash could trace to a grievance from half
+a minute and a free run ago — exactly the unfair loss the commit rule existed to
+prevent. A moving car now calms down, and impatience only cashes in at the front
+of the queue.
+
+That fix made the game unlosable, and **the "a round always ends" test went red
+across eleven cases before I could ship it**. That test exists because I had
+already shipped one invisible equilibrium; this time the harness caught the same
+class of mistake instead of me. It is the single clearest argument in this repo
+for writing the test that encodes a property rather than the one that checks an
+output.
+
 ## What the tests do, and what they refuse to do
 
 The suite splits along the line `spec/README.md` draws.
