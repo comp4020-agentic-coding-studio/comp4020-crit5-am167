@@ -165,32 +165,35 @@ export function draw(ctx: CanvasRenderingContext2D, state: Game, s: Size): void 
 
   for (const car of state.cars) drawCar(ctx, car, s);
 
+  // The score. Digits only: the number goes up when a car gets through, and
+  // that is the whole of what it means.
+  //
+  // In play it lives in the top-right, clear of both carriageways — over the
+  // north lane it collided with the very cars it was counting.
+  ctx.fillStyle = state.crash ? "#e8eaf0" : "#6b7080";
+  ctx.font = `600 ${Math.round(g.min * (state.crash ? 0.14 : 0.05))}px ui-monospace, monospace`;
+  ctx.textAlign = state.crash ? "center" : "right";
+  ctx.textBaseline = state.crash ? "middle" : "top";
+  ctx.fillText(
+    String(state.passed),
+    state.crash ? w / 2 : w - g.min * 0.06,
+    state.crash ? Math.max(g.min * 0.16, g.cy - g.half - g.min * 0.16) : g.min * 0.05,
+  );
+
+  // Drawn last, and drawn big, so it sits on top of everything including the
+  // score. The wreck is the only answer the player gets to "what did I do
+  // wrong" — it says which approach finally gave up waiting — so it cannot be
+  // the thing hidden behind the number.
   if (state.crash) {
     const { x, y } = place(state.crash.from, state.crash.t, s);
     ctx.fillStyle = STOPPED;
     ctx.beginPath();
     for (let i = 0; i < 16; i++) {
-      const a = (i / 16) * Math.PI * 2;
-      const r = g.min * (i % 2 ? 0.025 : 0.06);
+      const a = (i / 16) * Math.PI * 2 - Math.PI / 2;
+      const r = g.min * (i % 2 ? 0.035 : 0.085);
       ctx[i ? "lineTo" : "moveTo"](x + Math.cos(a) * r, y + Math.sin(a) * r);
     }
     ctx.closePath();
     ctx.fill();
-  }
-
-  // The score. Digits only: the number goes up when a car gets through, and
-  // that is the whole of what it means.
-  ctx.fillStyle = state.crash ? "#e8eaf0" : "#6b7080";
-  ctx.font = `600 ${Math.round(g.min * (state.crash ? 0.14 : 0.05))}px ui-monospace, monospace`;
-  // Parked in the top-right, clear of both carriageways — over the north lane
-  // it was colliding with the cars it counts.
-  if (state.crash) {
-    ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
-    ctx.fillText(String(state.passed), w / 2, h / 2);
-  } else {
-    ctx.textAlign = "right";
-    ctx.textBaseline = "top";
-    ctx.fillText(String(state.passed), w - g.min * 0.06, g.min * 0.05);
   }
 }

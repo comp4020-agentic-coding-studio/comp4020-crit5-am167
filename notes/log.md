@@ -47,3 +47,22 @@ Then opened it in Chrome, which found what the probe could not see: the sim`s st
 painted one were in different places, because `t` is normalised per-axis while the junction is
 square in pixels. Cars queued *inside* the intersection. Render now maps t piecewise
 (approach / box / exit) so STOP lands on the kerb at any aspect ratio.
+
+## Playtest on the finished build
+
+Two hypotheses about feel, one wrong and one right — and only playing separated them.
+
+**Wrong:** I expected the all-red clearance after a switch to read as the game ignoring the
+click, causing players to double-toggle and undo themselves. Measured it across a real 54s
+round: longest all-red was 159ms, and only one blackout over 120ms. Not a problem. Assuming it
+would have been would have cost a fix nobody needed.
+
+**Right (the spec-line-5 change):** played through to an actual crash and the game-over score is
+drawn dead centre — directly on top of the wreck. The crash mark is the only answer the player
+gets to "what did I do wrong": it shows *which approach* finally gave up waiting. Hiding it
+behind the number turns an earned loss into an arbitrary one. Score now sits above the junction
+and the wreck draws last and larger, so both are legible.
+
+This one is invisible from the code. Reading `draw()` it is obvious the number is centred and
+obvious the star is centred; nothing says they collide, because nothing says the crash matters
+more. You only see it having just lost.
