@@ -142,3 +142,40 @@ screen that looked like interface rather than world — with a soft blast halo.
 Verified at both marked viewports by device emulation with `innerWidth`/`innerHeight` asserted
 (1920x1080 and 390x844), plus a crash frame. Frame budget under a live junction: 8.3ms median,
 9.3ms worst, against 16.7ms.
+
+## Australian road language and believable queues
+
+Replaced the British-style yellow box and highway-like edge lines with the markings used on an
+Australian signal approach: a solid white dividing line near each stop line, broken centre line
+farther out, and two dashed parallel lines around every pedestrian crosswalk. Moved each stop line
+back behind the crossing and added a concrete kerb-and-gutter channel, while retaining left-hand
+traffic.
+
+TDD on the visible geometry: tightened `spec/render.test.ts` so every marked viewport requires a
+waiting car to leave pedestrian-crossing space and queued cars to keep at least 30% of a car length
+between bumpers. The old render failed 24 checks as expected. Mapping STOP to a 1.14-car-length
+setback and increasing `CAR_GAP` from 0.055 to 0.075 makes the contract pass without shrinking the
+cars. Browser review caught the first 20% gap still reading tightly once lamp glow was included, so
+the final test and spacing use 30%.
+
+Full `pnpm check` then caught one wider-spacing sequence where an impatient red-runner began
+calming after it had committed, leaving a crash state with no car still at full warning. Latched
+full patience only for cars already committed by impatience; ordinary moving traffic still calms.
+All 312 checks pass again.
+
+Final visual QA in installed headless Chrome at the two marked viewports (1920×1080 and 390×844):
+crosswalks and stop lines remain distinct, all three opening cars keep visible bumper gaps, and the
+full-screen canvas has no clipping or scrollbars. Browser console reported no warnings or errors.
+
+## Constant visual speed through the junction
+
+Chrome profiling found the cars were not accelerating in the sim: `CAR_SPEED` stayed at 0.26 t/s,
+but the renderer stretched the narrow STOP→EXIT interval across the crossing and intersection.
+At 1280×720 this made the on-screen speed jump 1.53× on east-west approaches and 3.12× on
+north-south approaches.
+
+Added a render speed-continuity regression across all four directions and all marked/aspect-ratio
+viewports. `along()` now anchors STOP and EXIT while using one constant world-distance scale, so
+the apparent speed is continuous. Reduced the logical `CAR_GAP` to 0.025 to preserve the intended
+30%+ bumper gap under the new scale. `pnpm check` passes all 328 tests; Chrome verification at
+1920×1080 and 390×844 shows no seam speed-up, clipping, or console errors.

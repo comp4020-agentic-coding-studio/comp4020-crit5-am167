@@ -38,14 +38,14 @@ export type Game = {
 };
 
 // --- Geometry -------------------------------------------------------------
-// An approach runs 0..1. The intersection box is the slice in the middle: STOP
-// is where the painted line is, EXIT is where the car is clear of the box.
+// An approach runs 0..1. The controlled area is the slice in the middle: STOP
+// is the painted stop line, EXIT is where the car has cleared the far side.
 
 export const STOP = 0.46;
 export const EXIT = 0.54;
 
-/** Bumper-to-bumper spacing, in the same units as `t`. */
-export const CAR_GAP = 0.055;
+/** Standstill centre-to-centre spacing, in the same units as `t`. */
+export const CAR_GAP = 0.025;
 
 // --- Tuning ---------------------------------------------------------------
 // Numbers to be settled by playing, not by reasoning. See notes/log.md.
@@ -64,7 +64,7 @@ export function axisOf(dir: Dir): Axis {
   return dir === "n" || dir === "s" ? "ns" : "ew";
 }
 
-/** Which axes currently have a car inside the intersection box. */
+/** Which axes currently have a car committed inside the controlled area. */
 export function occupancy(g: Game): Record<Axis, boolean> {
   const box = { ns: false, ew: false };
   for (const c of g.cars) {
@@ -225,13 +225,19 @@ export function step(g: Game, dt: number): Game {
       // committing only frees a car from the *light*, never from the car in
       // front, so an impatient driver still cannot drive through a queue.
       const held = stopped && !c.committed;
-      const patience = held
-        ? Math.min(1, c.patience + patienceRate)
-        : // A driver who gets a clear run calms down. Without this, a car that
-          // was briefly boxed in stays furious for the whole length of the
-          // road, which looks absurd and plays worse: it arrives at a junction
-          // it has no grievance with and runs the red anyway.
-          Math.max(0, c.patience - patienceRate * CALM_RATE);
+      const patience =
+        // Once impatience has made a driver commit to running the red, keep the
+        // warning latched until they clear. Letting it cool mid-crossing can
+        // leave a crash with no visibly responsible car.
+        c.committed && c.patience >= 1
+          ? 1
+          : held
+            ? Math.min(1, c.patience + patienceRate)
+            : // A driver who gets a clear run calms down. Without this, a car
+              // that was briefly boxed in stays furious for the whole length
+              // of the road, which looks absurd and plays worse: it arrives at
+              // a junction it has no grievance with and runs the red anyway.
+              Math.max(0, c.patience - patienceRate * CALM_RATE);
 
       moved.push({
         ...c,

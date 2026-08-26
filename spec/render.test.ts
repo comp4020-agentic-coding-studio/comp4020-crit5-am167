@@ -1,6 +1,15 @@
 import { describe, expect, it } from "vitest";
 import { carBox, draw, roadHalfWidth } from "../game/render.ts";
-import { EXIT, STOP, type Car, type Dir, type Game, initial } from "../game/sim.ts";
+import {
+  CAR_GAP,
+  CAR_SPEED,
+  EXIT,
+  STOP,
+  type Car,
+  type Dir,
+  type Game,
+  initial,
+} from "../game/sim.ts";
 
 // C5 contract test: the drawing layer, held to the promises the *rules* depend
 // on being visible.
@@ -77,9 +86,11 @@ describe("cars are drawn on the road", () => {
         else expect(hi).toBeLessThanOrEqual(centre);
       });
 
-      it.each(DIRS)("stops a waiting car from the %s short of the junction box", (from) => {
-        // A car resting on the sim's stop line must be drawn outside the box,
-        // not sitting in the middle of the intersection.
+      it.each(DIRS)("stops a waiting car from the %s before the pedestrian crossing", (from) => {
+        // A signalised Australian intersection leaves a pedestrian crosswalk
+        // between the stop line and the junction. A car at STOP therefore
+        // needs a meaningful setback, not merely a bumper that avoids the box
+        // by a rounding error.
         const box = carBox(car(from, STOP), s);
         const vertical = from === "n" || from === "s";
         const nose =
@@ -93,10 +104,41 @@ describe("cars are drawn on the road", () => {
         const centre = vertical ? cy : cx;
         const nearEdge = from === "n" || from === "w" ? centre - half : centre + half;
         const gap = from === "n" || from === "w" ? nearEdge - nose : nose - nearEdge;
-        // Sub-pixel tolerance: a nose landing on the paint to within a
-        // millionth of a pixel is on the paint. The failure this guards
-        // against is a car sitting a car's-length into the intersection.
-        expect(gap, `${from} noses into the junction while waiting`).toBeGreaterThan(-1e-6);
+        const carLength = vertical ? box.h : box.w;
+        expect(gap, `${from} leaves no room for the pedestrian crossing`).toBeGreaterThanOrEqual(
+          carLength * 0.75,
+        );
+      });
+
+      it.each(DIRS)("leaves a visible standstill gap in the %s queue", (from) => {
+        const leader = carBox(car(from, STOP, { id: 1 }), s);
+        const follower = carBox(car(from, STOP - CAR_GAP, { id: 2 }), s);
+        const vertical = from === "n" || from === "s";
+        const carLength = vertical ? leader.h : leader.w;
+        const centres = vertical
+          ? Math.abs(leader.y - follower.y)
+          : Math.abs(leader.x - follower.x);
+        const bumperGap = centres - carLength;
+
+        expect(bumperGap, `${from} queue is visually bumper-to-bumper`).toBeGreaterThanOrEqual(
+          carLength * 0.3,
+        );
+      });
+
+      it.each(DIRS)("keeps the %s car at a steady on-screen speed", (from) => {
+        const frame = 1 / 60;
+        const probes = [0.2, STOP - 0.08, STOP + 0.015, (STOP + EXIT) / 2, EXIT + 0.04];
+        const speeds = probes.map((t) => {
+          const a = carBox(car(from, t), s);
+          const b = carBox(car(from, t + CAR_SPEED * frame), s);
+          return Math.hypot(b.x - a.x, b.y - a.y) / frame;
+        });
+        const slowest = Math.min(...speeds);
+        const fastest = Math.max(...speeds);
+
+        expect(fastest, `${from} accelerates across a geometry seam`).toBeLessThanOrEqual(
+          slowest * 1.05,
+        );
       });
 
       it("puts a car mid-box inside the junction", () => {

@@ -19,14 +19,14 @@ import { EXIT, STOP, type Car, type Dir, type Game, axisOf, flowing } from "./si
 // --- Palette --------------------------------------------------------------
 
 const NIGHT = "#15181f"; // ground beyond the footpath
-const PATH = "#242932"; // concrete footpath
-const PATH_EDGE = "#323845";
-const KERB_TOP = "#4b5464"; // the lit top face of the kerb
-const ASPHALT = "#2b3038";
-const ASPHALT_DARK = "#23272e"; // polished wheel tracks
-const ASPHALT_BOX = "#2c313a"; // the junction wears differently
+const PATH = "#292d32"; // concrete footpath
+const PATH_EDGE = "#393e45";
+const KERB_TOP = "#646970"; // pale precast concrete under the street lamps
+const GUTTER = "#393e44"; // the concrete channel common on Australian urban streets
+const ASPHALT = "#292e35";
+const ASPHALT_DARK = "#22262c"; // polished wheel tracks
+const ASPHALT_BOX = "#2a2f36"; // the junction wears differently
 const PAINT = "#c2c8d4"; // worn thermoplastic
-const BOX_HATCH = "#c9a94a"; // the yellow box junction
 
 const GO = "#3fd66a";
 const HALT = "#e8452f";
@@ -58,8 +58,8 @@ const ROAD_HALF = 0.075;
 const PATH_WIDE = 0.038;
 
 // A car has to be shorter than the sim's bumper-to-bumper spacing or a queue
-// draws as one long smear. CAR_GAP (0.055 in t) maps to ~0.055 of the smaller
-// edge at its tightest, so this is the ceiling, not a taste decision.
+// draws as one long smear. The renderer maps t to a constant world distance,
+// so the logical gap is tuned against the car length rather than the viewport.
 const CAR_LEN = 0.046;
 const CAR_WIDE = 0.028;
 
@@ -76,11 +76,14 @@ type Geom = {
   cy: number;
   len: number;
   wide: number;
+  /** Stop-line setback: pedestrian crosswalk plus its required clearances. */
+  stopSetback: number;
 };
 
 function geom(s: Size): Geom {
   const min = Math.min(s.width, s.height);
   const half = min * ROAD_HALF;
+  const len = min * CAR_LEN;
   return {
     min,
     half,
@@ -88,8 +91,11 @@ function geom(s: Size): Geom {
     path: min * PATH_WIDE,
     cx: s.width / 2,
     cy: s.height / 2,
-    len: min * CAR_LEN,
+    len,
     wide: min * CAR_WIDE,
+    // Roughly 5.1 m when the car is read as a 4.5 m passenger vehicle:
+    // 1.0 m inner clearance + 2.8 m crosswalk + 1.3 m stop-line clearance.
+    stopSetback: len * 1.14,
   };
 }
 
@@ -104,28 +110,21 @@ export function roadHalfWidth(s: Size): number {
  * Distance in pixels along an approach, for a car nose at `t`.
  *
  * The sim measures `t` from 0 at the entry edge to 1 at the far edge, with the
- * intersection between STOP and EXIT. The junction, though, is a square in
- * pixels, so on a wide screen the same `t` window is a very different fraction
- * of the width than of the height. Mapping `t` straight onto the axis puts the
- * painted stop line and the sim's stop line in different places — cars queue
- * inside the junction, and the rule the player is being taught is invisible.
- *
- * So the map is piecewise: approach, box, exit. STOP lands exactly on the near
- * kerb line and EXIT exactly on the far one, whatever shape the window is.
+ * controlled area between STOP and EXIT. The renderer anchors those two rules
+ * to the painted stop line and far kerb, then uses one constant scale between
+ * them. That keeps a car's on-screen speed continuous as it crosses the
+ * approach, pedestrian crossing and junction.
  *
  * The value is where the car's *nose* is, not its centre. `t` is what the stop
  * line and the collision box are defined against, so the bumper is the honest
- * thing to pin to them: a car waiting at STOP has its nose on the paint and its
- * body behind it, which is both what the sim means and what a car does.
+ * thing to pin to them: a car waiting at STOP has its nose on the stop line and
+ * its body behind it, which is both what the sim means and what a car does.
  */
 function along(t: number, axisLength: number, g: Geom): number {
   const centre = axisLength / 2;
-  const approach = Math.max(0, centre - g.half);
-  if (t <= STOP) return (t / STOP) * approach;
-  if (t <= EXIT) return approach + ((t - STOP) / (EXIT - STOP)) * g.half * 2;
-  // Overshoot by a car length so a car that leaves at t=1 is fully off screen
-  // rather than vanishing with its boot still in view.
-  return centre + g.half + ((t - EXIT) / (1 - EXIT)) * (approach + g.len);
+  const stopLine = Math.max(0, centre - g.half - g.stopSetback);
+  const farEdge = centre + g.half;
+  return stopLine + ((t - STOP) / (EXIT - STOP)) * (farEdge - stopLine);
 }
 
 export type Box = {
@@ -351,6 +350,7 @@ function drawGround(ctx: CanvasRenderingContext2D, s: Size, g: Geom): void {
 function drawAsphalt(ctx: CanvasRenderingContext2D, s: Size, g: Geom): void {
   const kerb = Math.max(1.5, g.min * 0.0035);
   const shadow = kerb * 1.6;
+  const gutter = Math.max(2, g.min * 0.006);
   const L = g.cx - g.half;
   const R = g.cx + g.half;
   const T = g.cy - g.half;
@@ -365,6 +365,19 @@ function drawAsphalt(ctx: CanvasRenderingContext2D, s: Size, g: Geom): void {
   // the same asphalt with more traffic over it.
   ctx.fillStyle = ASPHALT_BOX;
   ctx.fillRect(L, T, g.half * 2, g.half * 2);
+
+  // Concrete kerb-and-gutter channels. Their pale strips are a quiet but very
+  // Australian bit of street grammar, and they keep this reading as an urban
+  // road rather than a highway with generic edge lines.
+  ctx.fillStyle = GUTTER;
+  for (const y of [T, B - gutter]) {
+    ctx.fillRect(0, y, L, gutter);
+    ctx.fillRect(R, y, s.width - R, gutter);
+  }
+  for (const x of [L, R - gutter]) {
+    ctx.fillRect(x, 0, gutter, T);
+    ctx.fillRect(x, B, gutter, s.height - B);
+  }
 
   // Wheel tracks: two polished bands per lane, where the tyres actually go.
   ctx.fillStyle = alpha(ASPHALT_DARK, 0.7);
@@ -420,73 +433,88 @@ function drawAsphalt(ctx: CanvasRenderingContext2D, s: Size, g: Geom): void {
 
 function drawMarkings(ctx: CanvasRenderingContext2D, s: Size, g: Geom): void {
   const thin = Math.max(1.5, g.min * 0.0035);
-  const stopThick = Math.max(2, g.min * 0.005);
+  const stopThick = Math.max(2, g.len * 0.1);
+  const crossThick = Math.max(1.5, g.len * 0.04);
+  const L = g.cx - g.half;
+  const R = g.cx + g.half;
+  const T = g.cy - g.half;
+  const B = g.cy + g.half;
 
-  // Dashed centre line, stopping short of the junction.
-  ctx.strokeStyle = alpha(PAINT, 0.5);
+  const stopN = T - g.stopSetback;
+  const stopS = B + g.stopSetback;
+  const stopW = L - g.stopSetback;
+  const stopE = R + g.stopSetback;
+
+  // Australian signal approaches use an unbroken white dividing line near
+  // the stop line. Farther out it relaxes to the familiar broken centre line.
+  // Six-and-a-half car lengths approximates the 30 m approach treatment while
+  // remaining legible at the game's compressed scale.
+  const solidRun = g.len * 6.5;
+  ctx.strokeStyle = alpha(PAINT, 0.52);
   ctx.lineWidth = thin;
-  const dash = g.min * 0.05;
+  const dash = g.len * 0.75;
   ctx.setLineDash([dash, dash * 0.9]);
   ctx.beginPath();
   ctx.moveTo(0, g.cy);
-  ctx.lineTo(g.cx - g.half, g.cy);
-  ctx.moveTo(g.cx + g.half, g.cy);
+  ctx.lineTo(Math.max(0, stopW - solidRun), g.cy);
+  ctx.moveTo(Math.min(s.width, stopE + solidRun), g.cy);
   ctx.lineTo(s.width, g.cy);
   ctx.moveTo(g.cx, 0);
-  ctx.lineTo(g.cx, g.cy - g.half);
-  ctx.moveTo(g.cx, g.cy + g.half);
+  ctx.lineTo(g.cx, Math.max(0, stopN - solidRun));
+  ctx.moveTo(g.cx, Math.min(s.height, stopS + solidRun));
   ctx.lineTo(g.cx, s.height);
   ctx.stroke();
   ctx.setLineDash([]);
 
-  // Solid edge lines against the kerb.
-  ctx.strokeStyle = alpha(PAINT, 0.28);
-  ctx.lineWidth = Math.max(1, thin * 0.7);
-  const inset = g.half * 0.86;
+  ctx.strokeStyle = alpha(PAINT, 0.66);
   ctx.beginPath();
-  for (const sgn of [-1, 1]) {
-    ctx.moveTo(0, g.cy + sgn * inset);
-    ctx.lineTo(g.cx - g.half, g.cy + sgn * inset);
-    ctx.moveTo(g.cx + g.half, g.cy + sgn * inset);
-    ctx.lineTo(s.width, g.cy + sgn * inset);
-    ctx.moveTo(g.cx + sgn * inset, 0);
-    ctx.lineTo(g.cx + sgn * inset, g.cy - g.half);
-    ctx.moveTo(g.cx + sgn * inset, g.cy + g.half);
-    ctx.lineTo(g.cx + sgn * inset, s.height);
-  }
+  ctx.moveTo(Math.max(0, stopW - solidRun), g.cy);
+  ctx.lineTo(stopW, g.cy);
+  ctx.moveTo(stopE, g.cy);
+  ctx.lineTo(Math.min(s.width, stopE + solidRun), g.cy);
+  ctx.moveTo(g.cx, Math.max(0, stopN - solidRun));
+  ctx.lineTo(g.cx, stopN);
+  ctx.moveTo(g.cx, stopS);
+  ctx.lineTo(g.cx, Math.min(s.height, stopS + solidRun));
   ctx.stroke();
 
-  // The box junction. Thematically it is the game's own rule painted on the
-  // road — do not enter unless your exit is clear — and it is the only warm
-  // colour in the built world.
-  ctx.save();
+  // A signalised pedestrian crossing is bounded by two parallel broken white
+  // lines (not zebra stripes). The dashed rhythm and proportions are scaled
+  // from the Australian guidance's 1 m segments and 300 mm gaps.
+  const crossInner = g.len * 0.22;
+  const crossWidth = g.len * 0.62;
+  ctx.strokeStyle = alpha(PAINT, 0.72);
+  ctx.lineWidth = crossThick;
+  ctx.setLineDash([g.len * 0.22, g.len * 0.067]);
   ctx.beginPath();
-  ctx.rect(g.cx - g.half, g.cy - g.half, g.half * 2, g.half * 2);
-  ctx.clip();
-  ctx.strokeStyle = alpha(BOX_HATCH, 0.038);
-  ctx.lineWidth = Math.max(1, g.min * 0.0025);
-  const step = g.half * 0.62;
-  ctx.beginPath();
-  for (let d = -g.half * 2; d < g.half * 2; d += step) {
-    ctx.moveTo(g.cx - g.half + d, g.cy - g.half);
-    ctx.lineTo(g.cx + g.half + d, g.cy + g.half);
-    ctx.moveTo(g.cx - g.half + d, g.cy + g.half);
-    ctx.lineTo(g.cx + g.half + d, g.cy - g.half);
+  for (const y of [
+    T - crossInner,
+    T - crossInner - crossWidth,
+    B + crossInner,
+    B + crossInner + crossWidth,
+  ]) {
+    ctx.moveTo(L, y);
+    ctx.lineTo(R, y);
+  }
+  for (const x of [
+    L - crossInner,
+    L - crossInner - crossWidth,
+    R + crossInner,
+    R + crossInner + crossWidth,
+  ]) {
+    ctx.moveTo(x, T);
+    ctx.lineTo(x, B);
   }
   ctx.stroke();
-  ctx.restore();
-  ctx.strokeStyle = alpha(BOX_HATCH, 0.16);
-  ctx.lineWidth = Math.max(1, g.min * 0.003);
-  ctx.strokeRect(g.cx - g.half, g.cy - g.half, g.half * 2, g.half * 2);
+  ctx.setLineDash([]);
 
-  // Stop lines, on the kerb line of the box, across the approaching lane only.
-  // Drawn because the commit rule is defined against them: past this line a
-  // car is going, whatever the player does.
-  ctx.fillStyle = alpha(PAINT, 0.68);
-  ctx.fillRect(g.cx, g.cy - g.half - stopThick, g.half, stopThick);
-  ctx.fillRect(g.cx - g.half, g.cy + g.half, g.half, stopThick);
-  ctx.fillRect(g.cx - g.half - stopThick, g.cy - g.half, stopThick, g.half);
-  ctx.fillRect(g.cx + g.half, g.cy, stopThick, g.half);
+  // Thick stop lines sit on the approach side of the crosswalk, across only
+  // the left-hand traffic lane each one controls.
+  ctx.fillStyle = alpha(PAINT, 0.78);
+  ctx.fillRect(g.cx, stopN - stopThick / 2, g.half, stopThick);
+  ctx.fillRect(L, stopS - stopThick / 2, g.half, stopThick);
+  ctx.fillRect(stopW - stopThick / 2, T, stopThick, g.half);
+  ctx.fillRect(stopE - stopThick / 2, g.cy, stopThick, g.half);
 }
 
 /**
