@@ -115,6 +115,15 @@ say what they are for.
 - `spec/invariants.test.ts` and this week's `spec/*.test.ts` inspect `dist/`.
   Build first when running either file directly so they test current output.
 
+## Pristine output
+
+Output from any command you run --- `pnpm check`, `pnpm build`, `pnpm dev`,
+tests, typecheck --- must be pristine: zero failures, zero errors, zero
+warnings, zero backtraces/stack traces. A warning is not "fine because it's
+not an error" --- fix it or find out why it's there before moving on. The only
+exception is expected preflight/informational output that isn't itself a
+warning or error (e.g. a deploy check's routine confirmation steps).
+
 ## Process logging
 
 After each meaningful chunk of work --- a feature, a fix, a design decision ---
