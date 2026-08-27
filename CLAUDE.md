@@ -37,7 +37,8 @@ say what they are for.
   to avoid waiting for CI.
 - To see what the page actually looks like rather than what you assume it looks
   like, open it in a browser. The rendered page is the truth; your mental model
-  of it isn't.
+  of it isn't. Use the `agent-browser` CLI for this (`agent-browser skills get
+  core` for its workflow) rather than a browser MCP plugin.
 - When a check fails, read its output before changing anything. The failure
   message is the instruction: it tells you the file, the line, or the contract.
   Treat a red check as authoritative --- the page is wrong until the check is
@@ -67,8 +68,9 @@ say what they are for.
 - **Set the marked viewports by device emulation, not window resizing.** Chrome
   will not shrink a window below its own minimum, so asking for 390×844 by
   resizing silently yields something wider and every measurement taken in it is
-  about a viewport nobody marks. Emulate the viewport instead, and assert
-  `window.innerWidth`/`innerHeight` are the numbers you asked for before
+  about a viewport nobody marks. Use `agent-browser set viewport 390 844` (or
+  `agent-browser set device "iPhone 14"`) instead of resizing the window, and
+  assert `window.innerWidth`/`innerHeight` are the numbers you asked for before
   believing any measurement or screenshot taken there.
 - **`scrollWidth === clientWidth` cannot see a clipped layout.** An
   `overflow: hidden` container crops content silently instead of scrolling it,
@@ -77,8 +79,8 @@ say what they are for.
   for each element that matters, its top/bottom/left/right must fall inside
   the clip box, not just check for a scrollbar.
 - **Screenshot capture can hang while an animation loop is running.** If the
-  page draws every frame (a canvas game loop, a rAF-driven effect), a
-  screenshot or screencast call can stall against it in some Chrome versions.
+  page draws every frame (a canvas game loop, a rAF-driven effect), an
+  `agent-browser screenshot` call can stall against it in some Chrome versions.
   If a capture hangs, verify live state by measuring the DOM/canvas directly
   (`getBoundingClientRect`, reading canvas/game state) instead, and screenshot
   a paused or pre-start frame for the visual record --- don't read a failed
