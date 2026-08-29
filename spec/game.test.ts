@@ -1,12 +1,16 @@
 import { describe, expect, it } from "vitest";
+import { carBox } from "../game/render.ts";
 import {
   CAR_SPEED,
   EXIT,
+  LANE,
+  ROAD_HALF,
   STOP,
   type Car,
   type Dir,
   type Game,
   axisOf,
+  footprint,
   initial,
   step,
   toggle,
@@ -18,6 +22,19 @@ import {
 // Contract tests for C5's published spec. They retire with the brief.
 
 const DT = 1 / 60;
+
+/**
+ * The `t` that puts a car's body centre `offset` from the junction centre,
+ * measured along its own approach. Lets a test stage a car exactly on the
+ * point where two lanes cross instead of guessing a number.
+ */
+function tForOffset(offset: number): number {
+  const f = footprint({ id: 0, from: "n", t: STOP, patience: 0, committed: false });
+  // footprint is linear in t, so one sample plus the slope inverts it.
+  const slope =
+    footprint({ id: 0, from: "n", t: STOP + 0.01, patience: 0, committed: false }).y - f.y;
+  return STOP + ((offset - f.y) / slope) * 0.01;
+}
 
 function car(from: Dir, t: number, over: Partial<Car> = {}): Car {
   return { id: 1, from, t, patience: 0, committed: false, ...over };
@@ -89,16 +106,55 @@ describe("the commit rule", () => {
 });
 
 describe("crossing cars collide", () => {
-  it("two cars in the box on crossing axes end the round", () => {
+  // A crash is two cars *meeting*, not two cars being loosely near each other.
+  // The rule used to be occupancy of the whole controlled area, which spans
+  // STOP to the far kerb — about 4.4 car lengths — so it fired while the two
+  // cars were still several lengths apart and the wreck drew over empty road.
+  // Overlap is the rule now, and these tests pin it from both sides.
+
+  it("two cars whose bodies meet in the junction end the round", () => {
+    // n runs down the east lane and w runs along the north lane, so their
+    // paths cross at (+LANE, -LANE): n meets it *before* the centre and w
+    // *after* it. Staged here at that crossing point, a beat apart.
+    const g = staged([
+      car("n", tForOffset(-LANE), { id: 1, committed: true }),
+      car("w", tForOffset(LANE), { id: 2, committed: true }),
+    ]);
+
+    const after = play(g, 0.05);
+
+    expect(after.crash).not.toBeNull();
+    expect(axisOf(after.crash!.from)).toBeTruthy();
+  });
+
+  it("names both cars and the point their bodies met", () => {
+    const g = staged([
+      car("n", tForOffset(-LANE), { id: 1, committed: true }),
+      car("w", tForOffset(LANE), { id: 2, committed: true }),
+    ]);
+
+    const { crash } = play(g, 0.05);
+
+    expect(crash).not.toBeNull();
+    expect([...crash!.ids].sort()).toEqual([1, 2]);
+    // The contact point is where the two lanes cross, inside the junction.
+    expect(crash!.x).toBeCloseTo(LANE, 2);
+    expect(crash!.y).toBeCloseTo(-LANE, 2);
+    expect(Math.abs(crash!.x)).toBeLessThanOrEqual(ROAD_HALF);
+    expect(Math.abs(crash!.y)).toBeLessThanOrEqual(ROAD_HALF);
+  });
+
+  it("two cars crossing in lockstep miss each other", () => {
+    // The old rule's worst case, and the reason the wreck looked unnatural:
+    // these two are in the controlled area together the whole way across, but
+    // they are never in the same place — n is still short of the crossing
+    // point when w has already passed it. A near miss is a near miss.
     const g = staged([
       car("n", STOP + 0.01, { id: 1, committed: true }),
       car("w", STOP + 0.01, { id: 2, committed: true }),
     ]);
 
-    const after = play(g, 1);
-
-    expect(after.crash).not.toBeNull();
-    expect(axisOf(after.crash!.from)).toBeTruthy();
+    expect(play(g, 1).crash).toBeNull();
   });
 
   it("two cars on the same axis do not", () => {
@@ -109,6 +165,35 @@ describe("crossing cars collide", () => {
 
     expect(play(g, 1).crash).toBeNull();
   });
+});
+
+describe("the footprint is the body the renderer draws", () => {
+  // The collision rule reads `footprint`; the player sees `carBox`. If those
+  // two ever disagree the game kills you for a hit you cannot see, which is
+  // the exact failure this whole change was made to remove. `carBox` is in
+  // pixels about the screen centre and `footprint` is in fractions of the
+  // short edge about the junction centre, so one scale factor relates them —
+  // at every aspect ratio, because both axes are scaled by the short edge.
+  const VIEWPORTS = [
+    { name: "desktop 1920x1080", width: 1920, height: 1080 },
+    { name: "mobile 390x844", width: 390, height: 844 },
+    { name: "ultrawide 2560x720", width: 2560, height: 720 },
+  ];
+
+  for (const s of VIEWPORTS) {
+    it.each(["n", "e", "s", "w"] as const)(`agrees for ${s.name}, from %s`, (from) => {
+      for (const t of [0.2, STOP, 0.5, EXIT, 0.8]) {
+        const c = car(from, t);
+        const min = Math.min(s.width, s.height);
+        const f = footprint(c);
+        const box = carBox(c, s);
+        expect(box.x - s.width / 2).toBeCloseTo(f.x * min, 6);
+        expect(box.y - s.height / 2).toBeCloseTo(f.y * min, 6);
+        expect(box.w).toBeCloseTo(f.w * min, 6);
+        expect(box.h).toBeCloseTo(f.h * min, 6);
+      }
+    });
+  }
 });
 
 // --- The spec's own lines, as tests ---------------------------------------

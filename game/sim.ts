@@ -13,6 +13,23 @@ export type Dir = "n" | "e" | "s" | "w";
 
 export const DIRS: readonly Dir[] = ["n", "e", "s", "w"];
 
+/**
+ * The wreck. Enough for the renderer to draw the impact where it happened and
+ * to animate it: which two cars, the point their bodies met, and the moment.
+ */
+export type Crash = {
+  /** The approach of the first car in the pair. Which side finally gave up. */
+  readonly from: Dir;
+  readonly t: number;
+  /** Both cars, so the wreck can be drawn as a wreck rather than as traffic. */
+  readonly ids: readonly [number, number];
+  /** Contact point, junction-relative, in the same units as `footprint`. */
+  readonly x: number;
+  readonly y: number;
+  /** Sim time at impact. The renderer ages the explosion off this. */
+  readonly at: number;
+};
+
 export type Car = {
   readonly id: number;
   readonly from: Dir;
@@ -31,7 +48,7 @@ export type Game = {
   /** Cars that made it across. The score. */
   readonly passed: number;
   /** Where two cars met, or null while the round is alive. */
-  readonly crash: { readonly from: Dir; readonly t: number } | null;
+  readonly crash: Crash | null;
   readonly rng: number;
   readonly nextSpawn: number;
   readonly nextId: number;
@@ -46,6 +63,62 @@ export const EXIT = 0.54;
 
 /** Standstill centre-to-centre spacing, in the same units as `t`. */
 export const CAR_GAP = 0.025;
+
+// --- Physical size --------------------------------------------------------
+// How big a car is, and where its lane runs, decide when two of them meet —
+// so they are rules, and they live here rather than in render.ts. Every value
+// is a fraction of the viewport's short edge, which is the one unit the
+// renderer scales by on both axes, so the sim and the picture cannot drift.
+
+/** Half-width of the carriageway: one lane each way. */
+export const ROAD_HALF = 0.075;
+export const CAR_LEN = 0.046;
+export const CAR_WIDE = 0.028;
+/** Centre line to lane centre. A car sits on its own side of its own road. */
+export const LANE = ROAD_HALF / 2;
+/** Stop-line setback: crosswalk plus its clearances, ahead of the junction. */
+export const STOP_SETBACK = CAR_LEN * 1.14;
+/** Distance covered per unit of `t`, in those same fractional units. */
+export const T_SCALE = (2 * ROAD_HALF + STOP_SETBACK) / (EXIT - STOP);
+
+/** A rectangle about the junction centre, in fractions of the short edge. */
+export type Rect = { x: number; y: number; w: number; h: number };
+
+/**
+ * Where a car's body actually is: centre and size, relative to the middle of
+ * the junction, with +x east and +y south.
+ *
+ * This is the shape the player sees — `render.carBox` is this multiplied by
+ * the short edge — which is exactly why the collision rule reads it. When the
+ * rule was defined against `t` alone it could fire while the two cars were
+ * still car-lengths apart, and the explosion drew over empty asphalt.
+ */
+export function footprint(car: Car): Rect {
+  // `t` measures the nose; pull back half a length to reach the body centre.
+  const nose = -(ROAD_HALF + STOP_SETBACK) + (car.t - STOP) * T_SCALE;
+  const f = nose - CAR_LEN / 2;
+  const vertical = axisOf(car.from) === "ns";
+  const w = vertical ? CAR_WIDE : CAR_LEN;
+  const h = vertical ? CAR_LEN : CAR_WIDE;
+  switch (car.from) {
+    case "n":
+      return { x: LANE, y: f, w, h };
+    case "s":
+      return { x: -LANE, y: -f, w, h };
+    case "w":
+      return { x: f, y: -LANE, w, h };
+    case "e":
+      return { x: -f, y: LANE, w, h };
+  }
+}
+
+/** How far two rectangles interpenetrate on each axis. Negative means apart. */
+function overlap(a: Rect, b: Rect): { x: number; y: number } {
+  return {
+    x: (a.w + b.w) / 2 - Math.abs(a.x - b.x),
+    y: (a.h + b.h) / 2 - Math.abs(a.y - b.y),
+  };
+}
 
 // --- Tuning ---------------------------------------------------------------
 // Numbers to be settled by playing, not by reasoning. See notes/log.md.
@@ -159,7 +232,10 @@ export function toggle(g: Game): Game {
 }
 
 export function step(g: Game, dt: number): Game {
-  if (g.crash) return g;
+  // The round is over, but the clock is not: the renderer ages the fireball,
+  // the debris and the smoke off `time - crash.at`. Freezing everything was
+  // what made the ending read as a hung frame rather than as an event.
+  if (g.crash) return { ...g, time: g.time + dt };
 
   const time = g.time + dt;
   let rng = g.rng;
@@ -260,26 +336,49 @@ export function step(g: Game, dt: number): Game {
   cars = moved;
 
   // --- Collide ---
-  // Only cars sharing the box on crossing axes. Same-axis cars cannot meet;
-  // CAR_GAP guarantees it.
-  // Exclusive at STOP: a car resting *on* the line is waiting, not crossing.
-  // The same boundary defines `committed`, so "past the line" means one thing.
-  const inBox = cars.filter((c) => c.t > STOP && c.t <= EXIT);
-  for (let i = 0; i < inBox.length; i++) {
-    for (let j = i + 1; j < inBox.length; j++) {
-      const a = inBox[i]!;
-      const b = inBox[j]!;
-      if (axisOf(a.from) !== axisOf(b.from)) {
-        return {
-          ...g,
-          time,
-          rng,
-          nextSpawn,
-          nextId,
-          cars,
-          crash: { from: a.from, t: a.t },
-        };
-      }
+  // Two cars crash when their bodies actually meet. Same-axis cars cannot:
+  // they share a lane and CAR_GAP keeps them apart, so only crossing pairs
+  // are worth testing.
+  //
+  // This used to ask whether both cars were anywhere inside STOP..EXIT, which
+  // is a window about 4.4 car lengths deep, and the answer was yes long before
+  // either car reached the other. The round ended with the two cars several
+  // lengths apart and a fireball drawn over bare asphalt — a rule that read as
+  // a bug. Overlap is the honest test, and it costs nothing: the near miss it
+  // now allows is the best thing in the game.
+  const near = cars.filter((c) => c.t > STOP - CAR_LEN / T_SCALE && c.t < 1);
+  for (let i = 0; i < near.length; i++) {
+    for (let j = i + 1; j < near.length; j++) {
+      const a = near[i]!;
+      const b = near[j]!;
+      if (axisOf(a.from) === axisOf(b.from)) continue;
+      const fa = footprint(a);
+      const fb = footprint(b);
+      const hit = overlap(fa, fb);
+      if (hit.x <= 0 || hit.y <= 0) continue;
+      // The contact point: the centre of the region the two bodies share, so
+      // the explosion lands between them rather than on one of them.
+      const span = (p: number, q: number, wp: number, wq: number): number => {
+        const lo = Math.max(p - wp / 2, q - wq / 2);
+        const hi = Math.min(p + wp / 2, q + wq / 2);
+        return (lo + hi) / 2;
+      };
+      return {
+        ...g,
+        time,
+        rng,
+        nextSpawn,
+        nextId,
+        cars,
+        crash: {
+          from: a.from,
+          t: a.t,
+          ids: [a.id, b.id],
+          x: span(fa.x, fb.x, fa.w, fb.w),
+          y: span(fa.y, fb.y, fa.h, fb.h),
+          at: time,
+        },
+      };
     }
   }
 

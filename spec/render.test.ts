@@ -4,11 +4,13 @@ import {
   CAR_GAP,
   CAR_SPEED,
   EXIT,
+  LANE,
   STOP,
   type Car,
   type Dir,
   type Game,
   initial,
+  step,
 } from "../game/sim.ts";
 
 // C5 contract test: the drawing layer, held to the promises the *rules* depend
@@ -217,6 +219,57 @@ function strictCtx(): CanvasRenderingContext2D {
   }) as unknown as CanvasRenderingContext2D;
 }
 
+describe("a crash leaves a wreck the player can believe", () => {
+  // The end-to-end version of the collision change, and the one that would
+  // have caught the original bug. The rule is stated in `footprint` units in
+  // sim.ts; this plays real rounds to a real crash and checks the thing the
+  // player actually sees — that the two cars named in the wreck are touching,
+  // and that the fireball is drawn between them rather than out on bare road.
+  //
+  // Before, collision was occupancy of the whole STOP..EXIT window, which is
+  // about 4.4 car lengths deep: rounds ended with the pair three lengths apart
+  // and an explosion over empty asphalt. It read as the page glitching.
+  const SEEDS = [1, 7, 13, 29, 101, 997, 31337, 5, 88, 424242];
+
+  function toCrash(seed: number): Game {
+    let g = initial(seed);
+    for (let i = 0; i < Math.round(300 * 60) && !g.crash; i++) g = step(g, 1 / 60);
+    return g;
+  }
+
+  for (const s of VIEWPORTS) {
+    it.each(SEEDS)(`the two cars are touching at ${s.name} (seed %i)`, (seed) => {
+      const g = toCrash(seed);
+      expect(g.crash, "the round has to end for there to be a wreck").not.toBeNull();
+
+      const [ia, ib] = g.crash!.ids;
+      const a = g.cars.find((c) => c.id === ia);
+      const b = g.cars.find((c) => c.id === ib);
+      expect(a, "both cars in the wreck are still on the road").toBeDefined();
+      expect(b).toBeDefined();
+
+      const ba = carBox(a!, s);
+      const bb = carBox(b!, s);
+      expect(
+        Math.abs(ba.x - bb.x) * 2,
+        "the drawn bodies have to actually meet",
+      ).toBeLessThan(ba.w + bb.w);
+      expect(Math.abs(ba.y - bb.y) * 2).toBeLessThan(ba.h + bb.h);
+
+      // And the blast sits on the contact patch, inside both cars' bounds.
+      const min = Math.min(s.width, s.height);
+      const px = s.width / 2 + g.crash!.x * min;
+      const py = s.height / 2 + g.crash!.y * min;
+      for (const box of [ba, bb]) {
+        expect(px).toBeGreaterThanOrEqual(box.x - box.w / 2 - 1);
+        expect(px).toBeLessThanOrEqual(box.x + box.w / 2 + 1);
+        expect(py).toBeGreaterThanOrEqual(box.y - box.h / 2 - 1);
+        expect(py).toBeLessThanOrEqual(box.y + box.h / 2 + 1);
+      }
+    });
+  }
+});
+
 describe("drawing never emits a non-finite coordinate", () => {
   const states: [string, Game][] = [
     ["the opening frame", initial(1)],
@@ -233,7 +286,54 @@ describe("drawing never emits a non-finite coordinate", () => {
         passed: 137,
       },
     ],
-    ["a crash", { ...initial(1), passed: 42, crash: { from: "n", t: STOP + 0.02 } }],
+    [
+      "a crash",
+      {
+        ...initial(1),
+        passed: 42,
+        time: 30,
+        crash: {
+          from: "n" as const,
+          t: STOP + 0.02,
+          ids: [1, 4] as [number, number],
+          x: LANE,
+          y: -LANE,
+          at: 30,
+        },
+      },
+    ],
+    // The wreck animates off `time - crash.at`, so every stage of it has to be
+    // drawable: the impact frame, mid-blast, and long after it has settled.
+    [
+      "a crash on its very first frame",
+      {
+        ...initial(1),
+        time: 12,
+        crash: {
+          from: "w" as const,
+          t: STOP + 0.05,
+          ids: [1, 4] as [number, number],
+          x: -LANE,
+          y: LANE,
+          at: 12,
+        },
+      },
+    ],
+    [
+      "a crash long since settled",
+      {
+        ...initial(1),
+        time: 512,
+        crash: {
+          from: "e" as const,
+          t: STOP + 0.05,
+          ids: [2, 5] as [number, number],
+          x: 0,
+          y: 0,
+          at: 12,
+        },
+      },
+    ],
     ["an empty road", { ...initial(1), cars: [] }],
   ];
 

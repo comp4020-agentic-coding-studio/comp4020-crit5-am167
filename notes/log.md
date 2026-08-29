@@ -179,3 +179,94 @@ viewports. `along()` now anchors STOP and EXIT while using one constant world-di
 the apparent speed is continuous. Reduced the logical `CAR_GAP` to 0.025 to preserve the intended
 30%+ bumper gap under the new scale. `pnpm check` passes all 328 tests; Chrome verification at
 1920×1080 and 390×844 shows no seam speed-up, clipping, or console errors.
+
+## Crash scene: measured, not laggy — it reads as a glitch
+
+Investigated a report that the crash scene is "jarry and laggy". Measured in
+Chrome at 1920x1080 against `pnpm preview`, sampling rAF deltas via
+`window.__junction`:
+
+- crash state: 744 frames, p50 16.7 ms, max 17.6 ms, **zero** frames > 20 ms
+- alive state under play: 1815 frames, p50 16.7 ms, max 18.5 ms, zero > 20 ms
+- the transition frame itself: 17.4 ms
+
+So there is no frame-rate problem in either phase. What's wrong is that the
+crash *looks* like a hitch:
+
+1. Collision is box-occupancy, not overlap (`sim.ts` `--- Collide ---`). The
+   box spans `EXIT - STOP` = 0.08 of `t`, which `along()` maps to ~219 px at
+   1080 — about **4.4 car lengths**. Two cars both inside it can be ~150 px
+   apart and still "collide". Captured case: crash between car 8 (`s`,
+   t=0.464) and car 14 (`w`, t=0.494); their drawn bodies were ~152 px apart,
+   and the screenshot shows the fireball on one car with the other sitting
+   clear of it, headlights still on.
+2. `step` returns immediately once `crash` is set, so `time` freezes on one
+   frame. Cars stop dead mid-road, beams freeze, the boiling pulse
+   (`sin(time*9)`) latches. A hard freeze is what a hung frame looks like.
+3. `drawCrash` takes no time input: the fireball is fully formed on frame one
+   and identical forever. No expansion, no fade — a still image, so nothing on
+   screen says an *event* happened.
+4. The score teleports: `min*0.05` top-right to `min*0.15` centre in one frame.
+5. `RESTART_LOCKOUT` (600 ms in `main.ts`) swallows input silently — click, get
+   nothing back. That is the "laggy" half of the report.
+
+No code changed; this is the diagnosis.
+
+## The crash: a collision rule that matched the picture, and a blast that happens
+
+Follow-up to the measurement above. Confirmed there is no frame-rate problem
+anywhere, so the fix was to the thing that actually looked wrong.
+
+**The rule.** Collision was occupancy of `STOP..EXIT`. That window maps to
+about 4.4 car lengths of road, so "both cars in it" was true long before either
+car reached the other, and rounds ended with the pair three lengths apart and a
+fireball over bare asphalt. It read as the page glitching, not as a crash.
+
+Collision is now real overlap of the two bodies. That needed the sim to know
+how big a car is, so `ROAD_HALF`, `CAR_LEN`, `CAR_WIDE` and `STOP_SETBACK`
+moved out of `render.ts` into `sim.ts` — they decide when two cars meet, which
+makes them rules — and `render.ts` imports them. New `footprint(car)` returns
+the body as a rect about the junction centre in fractions of the short edge;
+`carBox` is that times the short edge, which a test now pins at three aspect
+ratios so the two can never drift.
+
+TDD: wrote the lockstep-miss and contact-point tests first and watched them go
+red (`footprint is not a function`, then the assertions), then implemented.
+The best new test is the end-to-end one in `render.test.ts` — play ten seeds to
+a real crash at three viewports and assert the two cars named in the wreck have
+overlapping `carBox`es and the blast point lies inside both. That is the
+original bug stated as a check; 40 cases, all green.
+
+Side effect worth naming: near misses are now possible and the game is more
+forgiving. An idle player used to crash around 15 s and now takes about 60 s.
+Both spec guarantees still hold with margin (idle < 120 s, competent < 300 s,
+all ten seeds), and the near miss is the best thing in the game to watch.
+
+**The picture.** `step` now advances `time` after the crash instead of
+returning the state untouched, so the renderer can age the wreck off
+`time - crash.at`. Everything else follows from that clock:
+
+- impact flash (0.13 s), fireball that swells then burns out (0.95 s),
+  expanding shockwave halo (0.6 s), debris thrown and settling on a
+  `1 - exp(-t/τ)` curve, smoke that arrives late and stays.
+- a camera flinch for the first half second, applied as a scale about the
+  centre as well as an offset — translating alone dragged the cached scenery
+  layer off its own edge and showed a bare strip.
+- the two cars in the wreck take a shove and a slew off the same curve, and
+  lose their headlights, brake lights, beam and patience bar. The two beams
+  still raking down the road from inside a fireball were the tell.
+- the score used to teleport — 3x bigger and corner-to-centre in one frame.
+  It travels now, on the same clock, arriving as the fire dies.
+
+Measured after: 60 fps through the blast (61 frames in the first second,
+p50 16.7 ms, max 18.4 ms, zero over 20 ms) and settled. Verified at 1920x1080
+and 390x844 in Chrome, capturing exact ages by driving rAF through a
+controllable clock from the console rather than trusting a live screenshot.
+
+**Not done: a restart button.** Asked to add one "as per spec"; checked the
+published C5 spec and it is not there. The seven lines are deploy, it can be
+lost, it teaches itself, a stranger finishes in five minutes, one rule under
+test plus one change from playing, the process artefacts, and accounting for
+how the work was directed. Line 3 — "no instructions anywhere, on screen or
+off" — points the other way, and `spec/teaches-itself.test.ts` already asserts
+zero `button`/`select`/`input`. Any click already restarts.

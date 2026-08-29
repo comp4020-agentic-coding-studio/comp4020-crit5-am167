@@ -14,7 +14,20 @@
 // down its own lane, and every light source smears a reflection into the wet
 // road under it.
 
-import { EXIT, STOP, type Car, type Dir, type Game, axisOf, flowing } from "./sim.ts";
+import {
+  CAR_LEN,
+  CAR_WIDE,
+  EXIT,
+  ROAD_HALF,
+  STOP,
+  STOP_SETBACK,
+  type Car,
+  type Dir,
+  type Game,
+  axisOf,
+  flowing,
+  footprint,
+} from "./sim.ts";
 
 // --- Palette --------------------------------------------------------------
 
@@ -52,16 +65,13 @@ const BODIES = [
 // All as a fraction of the smaller screen edge, so the junction is the same
 // shape on a phone as on a monitor.
 
-/** Half-width of the carriageway: one lane each way. */
-const ROAD_HALF = 0.075;
-/** Footpath, outside the kerb. */
-const PATH_WIDE = 0.038;
+// ROAD_HALF, CAR_LEN, CAR_WIDE and STOP_SETBACK come from sim.ts. They decide
+// when two cars meet, so they are rules before they are proportions, and the
+// one copy lives with the rules. A duplicate here would be a picture free to
+// drift away from the game it is a picture of.
 
-// A car has to be shorter than the sim's bumper-to-bumper spacing or a queue
-// draws as one long smear. The renderer maps t to a constant world distance,
-// so the logical gap is tuned against the car length rather than the viewport.
-const CAR_LEN = 0.046;
-const CAR_WIDE = 0.028;
+/** Footpath, outside the kerb. Cosmetic, so it stays here. */
+const PATH_WIDE = 0.038;
 
 export type Size = { width: number; height: number };
 
@@ -76,7 +86,11 @@ type Geom = {
   cy: number;
   len: number;
   wide: number;
-  /** Stop-line setback: pedestrian crosswalk plus its required clearances. */
+  /**
+   * Stop-line setback: pedestrian crosswalk plus its required clearances.
+   * Roughly 5.1 m when the car is read as a 4.5 m passenger vehicle:
+   * 1.0 m inner clearance + 2.8 m crosswalk + 1.3 m stop-line clearance.
+   */
   stopSetback: number;
 };
 
@@ -93,9 +107,7 @@ function geom(s: Size): Geom {
     cy: s.height / 2,
     len,
     wide: min * CAR_WIDE,
-    // Roughly 5.1 m when the car is read as a 4.5 m passenger vehicle:
-    // 1.0 m inner clearance + 2.8 m crosswalk + 1.3 m stop-line clearance.
-    stopSetback: len * 1.14,
+    stopSetback: min * STOP_SETBACK,
   };
 }
 
@@ -657,9 +669,23 @@ function drawBeam(ctx: CanvasRenderingContext2D, box: Box, g: Geom, bright: numb
   ctx.restore();
 }
 
-function drawCar(ctx: CanvasRenderingContext2D, car: Car, s: Size, time: number): void {
+function drawCar(
+  ctx: CanvasRenderingContext2D,
+  car: Car,
+  s: Size,
+  time: number,
+  wreck: { push: number; angle: number; away: number } | null = null,
+): void {
   const g = geom(s);
-  const box = carBox(car, s);
+  const base = carBox(car, s);
+  const box = wreck
+    ? {
+        ...base,
+        x: base.x + Math.cos(wreck.away) * wreck.push,
+        y: base.y + Math.sin(wreck.away) * wreck.push,
+        angle: base.angle + wreck.angle,
+      }
+    : base;
   const L = g.len;
   const W = g.wide;
 
@@ -670,12 +696,19 @@ function drawCar(ctx: CanvasRenderingContext2D, car: Car, s: Size, time: number)
   // own colour, and it earns it: it is the single most important thing on
   // screen.
   const heat = Math.pow(car.patience, 1.4);
-  const paint = mix(bodyColour(car.id), HALT, heat * 0.85);
-  const boiling = car.patience >= 1;
+  // A wrecked car is scorched, not angry: it loses the warning paint along
+  // with its lights. Leaving it glowing red kept shouting a warning about
+  // something that had already happened.
+  const paint = wreck
+    ? shade(mix(bodyColour(car.id), HALT, heat * 0.85), 0.45)
+    : mix(bodyColour(car.id), HALT, heat * 0.85);
+  const boiling = car.patience >= 1 && !wreck;
   // A deterministic pulse: the sim's own clock, so no wall clock creeps in.
   const pulse = boiling ? 0.5 + 0.5 * Math.sin(time * 9) : 0;
 
-  drawBeam(ctx, box, g, boiling ? 1.35 : 1);
+  // Headlights die with the car. The two beams still raking down the road
+  // from inside a fireball were the tell that nothing had really happened.
+  if (!wreck) drawBeam(ctx, box, g, boiling ? 1.35 : 1);
 
   ctx.save();
   ctx.translate(box.x, box.y);
@@ -754,12 +787,16 @@ function drawCar(ctx: CanvasRenderingContext2D, car: Car, s: Size, time: number)
   // the same thing the patience bar shouts.
   const lampW = W * 0.2;
   const lampH = Math.max(1, L * 0.05);
-  ctx.fillStyle = HEADLIGHT;
+  ctx.fillStyle = wreck ? alpha("#4a4438", 0.9) : HEADLIGHT;
   ctx.fillRect(-W * 0.4, L / 2 - lampH, lampW, lampH);
   ctx.fillRect(W * 0.4 - lampW, L / 2 - lampH, lampW, lampH);
 
-  const braking = car.patience > 0 || boiling;
-  ctx.fillStyle = braking ? TAILLIGHT : alpha(TAILLIGHT, 0.55);
+  const braking = !wreck && (car.patience > 0 || boiling);
+  ctx.fillStyle = wreck
+    ? alpha("#3a2422", 0.9)
+    : braking
+      ? TAILLIGHT
+      : alpha(TAILLIGHT, 0.55);
   ctx.shadowColor = TAILLIGHT;
   ctx.shadowBlur = braking ? W * 0.7 : 0;
   ctx.fillRect(-W * 0.42, -L / 2, lampW, lampH);
@@ -783,7 +820,7 @@ function drawCar(ctx: CanvasRenderingContext2D, car: Car, s: Size, time: number)
   // It runs alongside the car on the kerb side — local +x is always the kerb,
   // whichever way the car faces — so it never lands under the car behind it in
   // a queue, and never sits in the road ahead where the player is watching.
-  if (car.patience > 0 && car.patience < 1) {
+  if (!wreck && car.patience > 0 && car.patience < 1) {
     const thick = Math.max(2.5, g.min * 0.0085);
     const gap = W * 0.42;
     ctx.fillStyle = alpha("#000000", 0.55);
@@ -904,19 +941,108 @@ function drawLight(ctx: CanvasRenderingContext2D, from: Dir, green: boolean, s: 
 }
 
 // --- The wreck ------------------------------------------------------------
+//
+// A crash is an *event*, and the old one was a still life: the sim froze, the
+// fireball arrived fully formed on the first frame and then never changed
+// again. Sixty identical frames a second is indistinguishable from a hung
+// page, which is what it looked like. Everything below is driven off the age
+// of the wreck, so the blast happens, decays and settles.
+
+/** Seconds since the impact, or null while the round is alive. */
+function crashAge(state: Game): number | null {
+  return state.crash ? Math.max(0, state.time - state.crash.at) : null;
+}
+
+/** Where the two cars met, in pixels. */
+function crashPoint(state: Game, s: Size): { x: number; y: number } {
+  const g = geom(s);
+  const c = state.crash;
+  return c ? { x: g.cx + c.x * g.min, y: g.cy + c.y * g.min } : { x: g.cx, y: g.cy };
+}
+
+/**
+ * Something thrown that comes to rest: fast at first, asymptotically still.
+ * One curve does the debris, the shards and the shove the two cars take, so
+ * the whole wreck settles on the same clock instead of on three guesses.
+ */
+function settle(age: number, tau: number): number {
+  return 1 - Math.exp(-age / tau);
+}
+
+/** 1 at the impact, 0 by `over` seconds, smoothly. */
+function fade(age: number, over: number): number {
+  const k = Math.max(0, Math.min(1, 1 - age / over));
+  return k * k;
+}
+
+/**
+ * The camera flinch. Decays inside half a second, and is applied as a scale
+ * about the centre as well as an offset — translating alone would drag the
+ * cached scenery layer off its own edge and show a bare strip down one side.
+ */
+function shake(state: Game, s: Size): { dx: number; dy: number; zoom: number } | null {
+  const age = crashAge(state);
+  if (age === null || age > 0.5) return null;
+  const g = geom(s);
+  const a = g.min * 0.013 * Math.exp(-age / 0.11);
+  if (a < 0.05) return null;
+  return {
+    dx: Math.sin(age * 97) * a,
+    dy: Math.cos(age * 83) * a * 0.8,
+    zoom: 1 + (2 * a) / Math.max(1, g.min),
+  };
+}
+
+/**
+ * How hard a wrecked car was hit, and which way it was thrown.
+ *
+ * The two cars in the wreck should not look like two cars that stopped. They
+ * take a shove away from the contact point and a slew about their own centre,
+ * both settling on the same curve as the debris, so the pile reads as
+ * something that happened rather than as a pause.
+ */
+function wreckOf(
+  state: Game,
+  car: Car,
+  s: Size,
+): { push: number; angle: number; away: number } | null {
+  const age = crashAge(state);
+  const c = state.crash;
+  if (age === null || !c || (c.ids[0] !== car.id && c.ids[1] !== car.id)) return null;
+  const g = geom(s);
+  const f = footprint(car);
+  const dx = f.x - c.x;
+  const dy = f.y - c.y;
+  const away = Math.atan2(dy, dx) || 0;
+  // The second car named is the one that was struck, so it takes the worse of
+  // it: further thrown, further slewed.
+  const struck = c.ids[1] === car.id;
+  const k = settle(age, 0.13);
+  return {
+    push: g.len * (struck ? 0.34 : 0.16) * k,
+    angle: (struck ? 0.62 : -0.28) * k,
+    away,
+  };
+}
 
 function drawCrash(ctx: CanvasRenderingContext2D, state: Game, s: Size): void {
   const g = geom(s);
   const crash = state.crash;
-  if (!crash) return;
-  const { x, y } = place(crash.from, crash.t, s);
+  const age = crashAge(state);
+  if (!crash || age === null) return;
+  const { x, y } = crashPoint(state, s);
   const r = g.min * 0.1;
 
-  // Scorch first, under everything.
+  // Deterministic, and seeded off the wreck rather than the clock, so the same
+  // crash always throws the same debris in the same directions.
+  const seed = Math.round((crash.x + 2) * 9973) + Math.round((crash.y + 2) * 7919);
+
+  // Scorch, painted on over the first third of a second and then permanent.
+  const scorched = Math.min(1, settle(age, 0.12));
   ctx.save();
   const scorch = ctx.createRadialGradient(x, y, 0, x, y, r * 1.9);
-  scorch.addColorStop(0, alpha("#000000", 0.75));
-  scorch.addColorStop(0.6, alpha("#000000", 0.4));
+  scorch.addColorStop(0, alpha("#000000", 0.75 * scorched));
+  scorch.addColorStop(0.6, alpha("#000000", 0.4 * scorched));
   scorch.addColorStop(1, alpha("#000000", 0));
   ctx.fillStyle = scorch;
   ctx.beginPath();
@@ -924,57 +1050,102 @@ function drawCrash(ctx: CanvasRenderingContext2D, state: Game, s: Size): void {
   ctx.fill();
   ctx.restore();
 
-  // Debris, thrown deterministically so the same crash always looks the same.
-  const next = rand(Math.round(crash.t * 10000) + crash.from.charCodeAt(0));
+  // Debris, thrown outward and coming to rest. It stays where it lands: a
+  // wreck leaves wreckage, and the settled scatter is what the player reads
+  // after the fire has gone out.
+  const thrown = settle(age, 0.16);
+  const next = rand(seed);
   ctx.fillStyle = "#2b2f36";
   for (let i = 0; i < 22; i++) {
     const a = next() * Math.PI * 2;
-    const d = r * (0.5 + next() * 1.5);
+    const d = r * (0.5 + next() * 1.5) * thrown;
     const sz = g.min * (0.003 + next() * 0.007);
     ctx.save();
     ctx.translate(x + Math.cos(a) * d, y + Math.sin(a) * d);
-    ctx.rotate(a);
+    ctx.rotate(a + thrown * 6);
     ctx.fillRect(-sz, -sz * 0.4, sz * 2, sz * 0.8);
     ctx.restore();
   }
 
   ctx.save();
   ctx.globalCompositeOperation = "lighter";
-  // Fireball.
-  const fire = ctx.createRadialGradient(x, y, 0, x, y, r);
-  fire.addColorStop(0, alpha("#ffffff", 0.95));
-  fire.addColorStop(0.18, alpha("#ffd27a", 0.85));
-  fire.addColorStop(0.45, alpha("#ff7a2f", 0.55));
-  fire.addColorStop(0.75, alpha(HALT, 0.3));
-  fire.addColorStop(1, alpha(HALT, 0));
-  ctx.fillStyle = fire;
-  ctx.beginPath();
-  ctx.arc(x, y, r, 0, Math.PI * 2);
-  ctx.fill();
 
-  // A blast halo rather than the crisp ring this started as. A hard circle
-  // outline at a fixed radius did not read as a shockwave; it read as a
-  // crosshair drawn over the game — the one thing on screen that looked like
-  // interface instead of world.
-  const halo = ctx.createRadialGradient(x, y, r * 0.95, x, y, r * 1.85);
-  halo.addColorStop(0, alpha("#ffb37a", 0.16));
-  halo.addColorStop(0.5, alpha("#ff8a4a", 0.07));
-  halo.addColorStop(1, alpha("#ff8a4a", 0));
-  ctx.fillStyle = halo;
-  ctx.beginPath();
-  ctx.arc(x, y, r * 1.85, 0, Math.PI * 2);
-  ctx.fill();
+  // Fireball: swells for a fifth of a second, then burns out over the next.
+  const swell = 0.28 + 0.82 * settle(age, 0.07);
+  const burn = fade(age, 0.95);
+  if (burn > 0.002) {
+    const fire = ctx.createRadialGradient(x, y, 0, x, y, r * swell);
+    fire.addColorStop(0, alpha("#ffffff", 0.95 * burn));
+    fire.addColorStop(0.18, alpha("#ffd27a", 0.85 * burn));
+    fire.addColorStop(0.45, alpha("#ff7a2f", 0.55 * burn));
+    fire.addColorStop(0.75, alpha(HALT, 0.3 * burn));
+    fire.addColorStop(1, alpha(HALT, 0));
+    ctx.fillStyle = fire;
+    ctx.beginPath();
+    ctx.arc(x, y, r * swell, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // The white core of the impact itself. Gone in three frames, and it is what
+  // makes the eye register a moment rather than a state.
+  const flash = fade(age, 0.13);
+  if (flash > 0.002) {
+    const hot = ctx.createRadialGradient(x, y, 0, x, y, r * 0.75);
+    hot.addColorStop(0, alpha("#ffffff", 0.95 * flash));
+    hot.addColorStop(1, alpha("#ffffff", 0));
+    ctx.fillStyle = hot;
+    ctx.beginPath();
+    ctx.arc(x, y, r * 0.75, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // The blast halo, now expanding — a shockwave rather than the fixed ring
+  // this started as. A hard circle outline at a constant radius did not read
+  // as a shockwave; it read as a crosshair drawn over the game, the one thing
+  // on screen that looked like interface instead of world.
+  const wave = fade(age, 0.6);
+  if (wave > 0.002) {
+    const inner = r * (0.95 + 2.1 * settle(age, 0.2));
+    const outer = inner + r * 0.9;
+    const halo = ctx.createRadialGradient(x, y, inner, x, y, outer);
+    halo.addColorStop(0, alpha("#ffb37a", 0.16 * wave));
+    halo.addColorStop(0.5, alpha("#ff8a4a", 0.07 * wave));
+    halo.addColorStop(1, alpha("#ff8a4a", 0));
+    ctx.fillStyle = halo;
+    ctx.beginPath();
+    ctx.arc(x, y, outer, 0, Math.PI * 2);
+    ctx.fill();
+  }
   ctx.restore();
+
+  // Smoke. It arrives as the fire dies, drifts, and stays — the only part of
+  // the wreck still moving a second later, so the scene never goes fully
+  // static and never looks frozen.
+  const smoke = Math.min(1, settle(age, 0.5)) * 0.5;
+  if (smoke > 0.004) {
+    const rise = g.min * 0.03 * Math.min(3, age);
+    const spread = r * (0.7 + 0.5 * Math.min(3, age));
+    ctx.save();
+    const plume = ctx.createRadialGradient(x, y - rise, 0, x, y - rise, spread);
+    plume.addColorStop(0, alpha("#161a20", 0.62 * smoke));
+    plume.addColorStop(0.55, alpha("#1d222a", 0.34 * smoke));
+    plume.addColorStop(1, alpha("#1d222a", 0));
+    ctx.fillStyle = plume;
+    ctx.beginPath();
+    ctx.arc(x, y - rise, spread, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
 
   // Shards of the two cars, big enough to read as wreckage rather than dust.
   ctx.fillStyle = alpha("#e9edf3", 0.75);
   for (let i = 0; i < 7; i++) {
     const a = next() * Math.PI * 2;
-    const d = r * (0.15 + next() * 0.55);
+    const d = r * (0.15 + next() * 0.55) * thrown;
     const sz = g.min * (0.006 + next() * 0.01);
     ctx.save();
     ctx.translate(x + Math.cos(a) * d, y + Math.sin(a) * d);
-    ctx.rotate(a * 2);
+    ctx.rotate(a * 2 + thrown * 4);
     ctx.beginPath();
     ctx.moveTo(-sz, 0);
     ctx.lineTo(0, -sz * 0.7);
@@ -1053,6 +1224,17 @@ export function draw(ctx: CanvasRenderingContext2D, state: Game, s: Size): void 
   const { width: w, height: h } = s;
   const g = geom(s);
 
+  // The camera flinch wraps the whole frame, cached scenery included, so the
+  // junction moves as one thing rather than the cars sliding across a road
+  // that stayed put.
+  const flinch = shake(state, s);
+  ctx.save();
+  if (flinch) {
+    ctx.translate(g.cx, g.cy);
+    ctx.scale(flinch.zoom, flinch.zoom);
+    ctx.translate(-g.cx + flinch.dx, -g.cy + flinch.dy);
+  }
+
   if (
     !layer(
       ctx,
@@ -1074,7 +1256,7 @@ export function draw(ctx: CanvasRenderingContext2D, state: Game, s: Size): void 
     drawLight(ctx, dir, flowing(state, axisOf(dir)), s);
   }
 
-  for (const car of state.cars) drawCar(ctx, car, s, state.time);
+  for (const car of state.cars) drawCar(ctx, car, s, state.time, wreckOf(state, car, s));
 
   if (
     !layer(
@@ -1095,19 +1277,29 @@ export function draw(ctx: CanvasRenderingContext2D, state: Game, s: Size): void 
   //
   // In play it lives in the top-right, clear of both carriageways — over the
   // north lane it collided with the very cars it was counting.
-  const size = Math.round(g.min * (state.crash ? 0.15 : 0.05));
+  //
+  // It used to teleport: at the instant of the crash it tripled in size and
+  // jumped from the corner to the middle in a single frame, which read as the
+  // page glitching rather than as the game finishing. It travels now, on the
+  // same clock as the wreck, arriving as the fire dies down.
+  const age = crashAge(state);
+  const k = age === null ? 0 : ease(Math.min(1, age / 0.55));
+  const size = Math.round(g.min * (0.05 + 0.1 * k));
+  const px = lerp(w - g.min * 0.06, w / 2, k);
+  const py = lerp(
+    Math.max(g.min * 0.05, 0) + g.min * 0.025,
+    Math.max(g.min * 0.17, g.cy - g.half - g.min * 0.2),
+    k,
+  );
   ctx.save();
   ctx.font = `600 ${Math.max(1, size)}px ui-monospace, SFMono-Regular, Menlo, monospace`;
-  ctx.textAlign = state.crash ? "center" : "right";
-  ctx.textBaseline = state.crash ? "middle" : "top";
-  const sx = state.crash ? w / 2 : w - g.min * 0.06;
-  const sy = state.crash
-    ? Math.max(g.min * 0.17, g.cy - g.half - g.min * 0.2)
-    : Math.max(g.min * 0.05, 0);
+  ctx.textAlign = k > 0.5 ? "center" : "right";
+  ctx.textBaseline = "middle";
   ctx.shadowColor = "rgba(0,0,0,0.85)";
   ctx.shadowBlur = size * 0.35;
-  ctx.fillStyle = state.crash ? "#f2f5fa" : alpha("#aeb6c6", 0.75);
-  ctx.fillText(String(state.passed), sx, sy);
+  ctx.fillStyle = mix("#aeb6c6", "#f2f5fa", k);
+  ctx.globalAlpha = 0.75 + 0.25 * k;
+  ctx.fillText(String(state.passed), px, py);
   ctx.restore();
 
   // Drawn last, and drawn big, so it sits on top of everything including the
@@ -1115,4 +1307,15 @@ export function draw(ctx: CanvasRenderingContext2D, state: Game, s: Size): void 
   // wrong" — it says which approach finally gave up waiting — so it cannot be
   // the thing hidden behind the number.
   drawCrash(ctx, state, s);
+
+  ctx.restore();
+}
+
+/** Smoothstep, so the score eases into place instead of sliding linearly. */
+function ease(k: number): number {
+  return k * k * (3 - 2 * k);
+}
+
+function lerp(a: number, b: number, k: number): number {
+  return a + (b - a) * k;
 }
